@@ -84,7 +84,49 @@ app.get("/api/files/:userid", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+app.post("/api/save-file", async (req, res) => {
 
+    try {
+
+        const {
+            user_id,
+            filename,
+            size
+        } = req.body;
+
+        const { data, error } =
+        await supabase
+        .from("files_metadata")
+        .insert([
+            {
+                user_id,
+                filename,
+                size,
+                synced: false
+            }
+        ])
+        .select();
+
+        if (error) {
+            return res.status(500).json({
+                error: error.message
+            });
+        }
+
+        res.json({
+            success: true,
+            data
+        });
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
+        });
+
+    }
+
+});
 app.listen(PORT, () => {
     console.log(`Server Running On Port ${PORT}`);
 });
