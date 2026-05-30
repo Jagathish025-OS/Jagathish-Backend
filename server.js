@@ -15,11 +15,15 @@ const supabase = createClient(
 console.log("SUPABASE_URL =", process.env.SUPABASE_URL);
 console.log("SUPABASE_KEY EXISTS =", !!process.env.SUPABASE_KEY);
 
+/* -------------------- HOME -------------------- */
+
 app.get("/", (req, res) => {
     res.json({
         message: "Jagathish Backend Running"
     });
 });
+
+/* -------------------- STATUS -------------------- */
 
 app.get("/api/status", (req, res) => {
     res.json({
@@ -29,7 +33,10 @@ app.get("/api/status", (req, res) => {
     });
 });
 
+/* -------------------- STORAGE ROOT LIST -------------------- */
+
 app.get("/api/files", async (req, res) => {
+
     try {
 
         const { data, error } =
@@ -52,7 +59,10 @@ app.get("/api/files", async (req, res) => {
         });
 
     }
+
 });
+
+/* -------------------- USER FILES -------------------- */
 
 app.get("/api/files/:userid", async (req, res) => {
 
@@ -83,7 +93,8 @@ app.get("/api/files/:userid", async (req, res) => {
 
 });
 
-const PORT = process.env.PORT || 3000;
+/* -------------------- SAVE FILE METADATA -------------------- */
+
 app.post("/api/save-file", async (req, res) => {
 
     try {
@@ -127,23 +138,111 @@ app.post("/api/save-file", async (req, res) => {
     }
 
 });
-app.listen(PORT, () => {
-    console.log(`Server Running On Port ${PORT}`);
-});
+
+/* -------------------- USER METADATA -------------------- */
+
 app.get("/api/metadata/:userid", async (req, res) => {
 
-    const { data, error } =
-    await supabase
-    .from("files_metadata")
-    .select("*")
-    .eq("user_id", req.params.userid);
+    try {
 
-    if (error) {
-        return res.status(500).json({
-            error: error.message
+        const { data, error } =
+        await supabase
+        .from("files_metadata")
+        .select("*")
+        .eq("user_id", req.params.userid);
+
+        if (error) {
+            return res.status(500).json({
+                error: error.message
+            });
+        }
+
+        res.json(data);
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
         });
+
     }
 
-    res.json(data);
+});
 
+/* -------------------- PENDING FILES -------------------- */
+
+app.get("/api/pending-files", async (req, res) => {
+
+    try {
+
+        const { data, error } =
+        await supabase
+        .from("files_metadata")
+        .select("*")
+        .eq("synced", false);
+
+        if (error) {
+            return res.status(500).json({
+                error: error.message
+            });
+        }
+
+        res.json(data);
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
+        });
+
+    }
+
+});
+
+/* -------------------- MARK FILE SYNCED -------------------- */
+
+app.post("/api/mark-synced/:id", async (req, res) => {
+
+    try {
+
+        const { local_path } = req.body;
+
+        const { data, error } =
+        await supabase
+        .from("files_metadata")
+        .update({
+            synced: true,
+            local_path: local_path,
+            synced_at: new Date().toISOString()
+        })
+        .eq("id", req.params.id)
+        .select();
+
+        if (error) {
+            return res.status(500).json({
+                error: error.message
+            });
+        }
+
+        res.json({
+            success: true,
+            data
+        });
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
+        });
+
+    }
+
+});
+
+/* -------------------- START SERVER -------------------- */
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`Server Running On Port ${PORT}`);
 });
