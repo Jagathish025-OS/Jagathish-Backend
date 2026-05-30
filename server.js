@@ -130,3 +130,20 @@ app.post("/api/save-file", async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server Running On Port ${PORT}`);
 });
+app.get("/api/metadata/:userid", async (req, res) => {
+
+    const { data, error } =
+    await supabase
+    .from("files_metadata")
+    .select("*")
+    .eq("user_id", req.params.userid);
+
+    if (error) {
+        return res.status(500).json({
+            error: error.message
+        });
+    }
+
+    res.json(data);
+
+});
