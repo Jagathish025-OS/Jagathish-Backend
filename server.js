@@ -12,6 +12,9 @@ const supabase = createClient(
     process.env.SUPABASE_KEY
 );
 
+console.log("SUPABASE_URL =", process.env.SUPABASE_URL);
+console.log("SUPABASE_KEY EXISTS =", !!process.env.SUPABASE_KEY);
+
 app.get("/", (req, res) => {
     res.json({
         message: "Jagathish Backend Running"
@@ -27,26 +30,61 @@ app.get("/api/status", (req, res) => {
 });
 
 app.get("/api/files", async (req, res) => {
+    try {
 
-    const userFolder =
-    "1131e565-e5de-4795-a3d8-955a26bbbe58";
+        const { data, error } =
+        await supabase.storage
+        .from("files")
+        .list();
 
-    const { data, error } =
-    await supabase.storage
-    .from("files")
-    .list(userFolder);
+        if (error) {
+            return res.status(500).json({
+                error: error.message
+            });
+        }
 
-    if (error) {
-        return res.status(500).json({
-            error: error.message
+        res.json(data);
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
         });
+
+    }
+});
+
+app.get("/api/files/:userid", async (req, res) => {
+
+    try {
+
+        const userId = req.params.userid;
+
+        const { data, error } =
+        await supabase.storage
+        .from("files")
+        .list(userId);
+
+        if (error) {
+            return res.status(500).json({
+                error: error.message
+            });
+        }
+
+        res.json(data);
+
+    } catch (err) {
+
+        res.status(500).json({
+            error: err.message
+        });
+
     }
 
-    res.json(data);
 });
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    console.log("Server Running");
+    console.log(`Server Running On Port ${PORT}`);
 });
