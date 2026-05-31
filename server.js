@@ -100,20 +100,22 @@ app.post("/api/save-file", async (req, res) => {
     try {
 
         const {
-            user_id,
-            filename,
-            size
-        } = req.body;
+    user_id,
+    filename,
+    size,
+    storage_path
+} = req.body;
 
         const { data, error } =
         await supabase
         .from("files_metadata")
         .insert([
             {
-                user_id,
-                filename,
-                size,
-                synced: false
+    user_id,
+    filename,
+    size,
+    storage_path,
+    synced:false
             }
         ])
         .select();
@@ -242,6 +244,33 @@ app.post("/api/mark-synced/:id", async (req, res) => {
 /* -------------------- START SERVER -------------------- */
 
 const PORT = process.env.PORT || 3000;
+
+app.get("/api/download-url/:id", async (req, res) => {
+
+    const { data, error } =
+    await supabase
+    .from("files_metadata")
+    .select("*")
+    .eq("id", req.params.id)
+    .single();
+
+    if (error) {
+        return res.status(500).json({
+            error:error.message
+        });
+    }
+
+    const { data:urlData } =
+    supabase.storage
+    .from("files")
+    .getPublicUrl(data.storage_path);
+
+    res.json({
+        filename:data.filename,
+        url:urlData.publicUrl
+    });
+
+});
 
 app.listen(PORT, () => {
     console.log(`Server Running On Port ${PORT}`);
