@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V10 · 2026-09-20";
+const BACKEND_BUILD = "V12 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -291,7 +291,7 @@ function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCou
 
 
 
-// ---------------- AI BASE GENERATOR V9 ----------------
+// ---------------- AI BASE GENERATOR V11 ----------------
 // Base layouts are community-shared deep links. We do not synthesize or alter layout payloads;
 // the server selects a verified catalog entry matching the requested Town Hall and validates
 // its Supercell share-link structure before returning it.
@@ -393,6 +393,223 @@ function selectBase(entries, th, baseType) {
   return [...pool].sort((a,b) => String(b.added || '').localeCompare(String(a.added || '')) || String(a.id || '').localeCompare(String(b.id || '')))[0];
 }
 
+
+const CREATIVE_CATEGORIES = [
+  'Fun', 'Character', 'Creature', 'Icon / Symbol', 'Shape / Pattern', 'Maze / Puzzle',
+  'Meme / Troll', 'Theme', 'Fantasy', 'Seasonal', 'Letter / Number', 'Abstract',
+  'Experimental', 'AI Surprise'
+];
+
+const CREATIVE_SHAPES = [
+  'heart','skull','dragon','crown','star','eagle','tiger','robot','sword','shield','fire','space',
+  'spiral','maze','circle','square','diamond','lightning','flower','clover','infinity','letter','number','chaos'
+];
+
+function normalizeCreativeCategory(value) {
+  const v=String(value||'').trim().toLowerCase();
+  const map={
+    'fun':'Fun','character':'Character','creature':'Creature','icon':'Icon / Symbol','symbol':'Icon / Symbol',
+    'icon / symbol':'Icon / Symbol','shape':'Shape / Pattern','pattern':'Shape / Pattern','shape / pattern':'Shape / Pattern',
+    'maze':'Maze / Puzzle','puzzle':'Maze / Puzzle','maze / puzzle':'Maze / Puzzle','meme':'Meme / Troll','troll':'Meme / Troll',
+    'meme / troll':'Meme / Troll','theme':'Theme','fantasy':'Fantasy','seasonal':'Seasonal',
+    'letter':'Letter / Number','number':'Letter / Number','letter / number':'Letter / Number','abstract':'Abstract',
+    'experimental':'Experimental','ai surprise':'AI Surprise'
+  };
+  return map[v] || 'Fun';
+}
+
+function fallbackCreativeIdeas(th, category, prompt) {
+  const p=String(prompt||'').trim();
+  const bank={
+    'Fun':[
+      ['Dragon Fortress','Creature','dragon','A recognizable dragon silhouette with a protected central core.'],
+      ['Skull Maze','Meme / Troll','skull','A skull-shaped maze with misleading outer entrances.'],
+      ['Clash Crown','Icon / Symbol','crown','A crown silhouette built from symmetric compartments.']
+    ],
+    'Character':[
+      ['Robot Guardian','Character','robot','A robot-like silhouette with the Town Hall as its power core.'],
+      ['Dragon Rider','Character','dragon','A fantasy character silhouette with layered defensive wings.'],
+      ['Shield Hero','Character','shield','A shield-shaped defensive emblem with a compact core.']
+    ],
+    'Creature':[
+      ['Dragon','Creature','dragon','A dragon head and wings surrounding the core.'],
+      ['Eagle','Creature','eagle','A bird-like silhouette with wide defensive wings.'],
+      ['Tiger','Creature','tiger','A striped creature-inspired pattern around the core.']
+    ],
+    'Icon / Symbol':[
+      ['Heart of the Village','Icon / Symbol','heart','A heart-shaped defensive emblem.'],
+      ['Royal Crown','Icon / Symbol','crown','A crown-shaped symmetric layout.'],
+      ['Shield Emblem','Icon / Symbol','shield','A shield icon around the Town Hall.']
+    ],
+    'Shape / Pattern':[
+      ['Galaxy Spiral','Shape / Pattern','spiral','A spiral with layered rings and a central core.'],
+      ['Diamond Core','Shape / Pattern','diamond','A diamond silhouette with mirrored defensive arms.'],
+      ['Infinite Loop','Shape / Pattern','infinity','An infinity-shaped route with two false cores.']
+    ],
+    'Maze / Puzzle':[
+      ['Labyrinth','Maze / Puzzle','maze','A multi-ring maze with deceptive entry paths.'],
+      ['Spiral Puzzle','Maze / Puzzle','spiral','A spiral route that makes the attacker cross multiple layers.'],
+      ['Four Gates','Maze / Puzzle','square','Four mirrored gates around a compact center.']
+    ],
+    'Meme / Troll':[
+      ['Giant Skull Troll','Meme / Troll','skull','A funny skull silhouette with intentionally confusing entrances.'],
+      ['Fake Core','Meme / Troll','chaos','Several visual false cores surrounding the real center.'],
+      ['Trap Maze','Meme / Troll','maze','A maze concept designed around surprise paths.']
+    ],
+    'Theme':[
+      ['Space Station','Theme','space','A sci-fi orbital pattern around the core.'],
+      ['Fire Temple','Theme','fire','A fiery symmetrical temple concept.'],
+      ['Royal Fortress','Theme','crown','A castle-like royal emblem.']
+    ],
+    'Fantasy':[
+      ['Dragon Realm','Fantasy','dragon','A fantasy dragon silhouette with a fortress core.'],
+      ['Magic Star','Fantasy','star','A five-point magical star around the center.'],
+      ['Sword Temple','Fantasy','sword','A sword-shaped fortress with protected edges.']
+    ],
+    'Seasonal':[
+      ['Winter Star','Seasonal','star','A snowflake-inspired radial pattern.'],
+      ['Festival Heart','Seasonal','heart','A festive heart with mirrored compartments.'],
+      ['Firework Burst','Seasonal','star','A radial burst pattern around the Town Hall.']
+    ],
+    'Letter / Number':[
+      [`TH${th} Number Base`,'Letter / Number','number',`A layout that visually forms the number ${th}.`],
+      ['J Letter','Letter / Number','letter','A large J-shaped pattern.'],
+      ['X Mark','Letter / Number','diamond','A bold X-like symmetric pattern.']
+    ],
+    'Abstract':[
+      ['Chaos Geometry','Abstract','chaos','An intentionally asymmetric geometric pattern.'],
+      ['Infinity Field','Abstract','infinity','A continuous-loop inspired shape.'],
+      ['Radial Pulse','Abstract','star','A radial energy pattern from the core.']
+    ],
+    'Experimental':[
+      ['AI Chaos','Experimental','chaos','A deliberately unusual asymmetric defensive concept.'],
+      ['Double Core Illusion','Experimental','circle','Two visual centers with one actual Town Hall core.'],
+      ['Broken Spiral','Experimental','spiral','A fragmented spiral with irregular defensive pockets.']
+    ],
+    'AI Surprise':[
+      ['AI Dragon Eye','Creature','dragon','An unexpected dragon-eye concept with a strong central pupil.'],
+      ['Clockwork Maze','Experimental','circle','A mechanical circular maze with repeating gears.'],
+      ['Phoenix Emblem','Fantasy','fire','A fiery bird-inspired emblem rising around the core.']
+    ]
+  };
+  const rows=bank[category]||bank['AI Surprise'];
+  return rows.map((r,i)=>({title:r[0],category:r[1],icon:r[2],concept:r[3],style:i===0?'high symmetry':i===1?'layered':'asymmetric',defensiveGoal:'Protect the central core while preserving the requested visual identity.',visualPattern:r[2],tags:[category,'TH'+th,'AI concept'],userPrompt:p||null}));
+}
+
+async function askAiForCreativeIdeas(th, category, prompt) {
+  if (!process.env.OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is not configured.');
+  const requested = CREATIVE_CATEGORIES.includes(category) ? category : 'AI Surprise';
+  const userPrompt=[
+    `Town Hall ${th}. You are the creative director for a Clash of Clans base concept lab.`,
+    `Category: ${requested}.`,
+    `User idea: ${String(prompt||'No specific idea; invent something surprising.').slice(0,600)}`,
+    'Invent THREE clearly different base concepts. You may invent a more specific sub-category if useful.',
+    'Think about shapes, icons, characters, creatures, letters, numbers, mazes, symbols, themes, jokes, patterns, symmetry, asymmetry and unusual concepts.',
+    'The concepts are design blueprints, not official Clash layouts. Never invent an OpenLayout link.',
+    'Return JSON only: {"ideas":[{"title":"...","category":"...","icon":"...","concept":"...","style":"...","defensiveGoal":"...","visualPattern":"...","tags":["..."]}]}.'
+  ].join('\n');
+  const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),18000);
+  try {
+    const r=await fetch(OPENROUTER_URL,{method:'POST',headers:{Authorization:`Bearer ${process.env.OPENROUTER_API_KEY}`,'Content-Type':'application/json','HTTP-Referer':'https://jagathish.online','X-Title':'Jagathish CoC AI Base Lab'},body:JSON.stringify({model:OPENROUTER_MODEL,temperature:0.9,max_tokens:900,reasoning:{effort:'none'},messages:[{role:'system',content:'You are a creative game-layout concept designer. Output JSON only.'},{role:'user',content:userPrompt}],response_format:{type:'json_object'}}),signal:controller.signal});
+    const raw=await r.text(); let j=null; try{j=JSON.parse(raw);}catch(_){ }
+    if(!r.ok) throw new Error(`AI provider request failed (${r.status})`);
+    const out=cleanAi(j?.choices?.[0]?.message?.content);
+    const ideas=Array.isArray(out?.ideas)?out.ideas.slice(0,3).map((x,i)=>({
+      title:String(x?.title||`AI Concept ${i+1}`).slice(0,80), category:String(x?.category||requested).slice(0,50), icon:String(x?.icon||'✨').slice(0,12),
+      concept:String(x?.concept||'Creative Town Hall base concept.').slice(0,500), style:String(x?.style||'distinctive').slice(0,100),
+      defensiveGoal:String(x?.defensiveGoal||'Protect the core while preserving the concept.').slice(0,250), visualPattern:String(x?.visualPattern||'custom').slice(0,80),
+      tags:Array.isArray(x?.tags)?x.tags.slice(0,6).map(v=>String(v).slice(0,30)):[]
+    })):[];
+    if(ideas.length<3) throw new Error('AI returned fewer than three creative concepts.');
+    return {ideas,model:j?.model||OPENROUTER_MODEL};
+  } finally {clearTimeout(timeout);}
+}
+
+function creativeThemeFromPrompt(prompt, shape) {
+  const raw=String(shape||prompt||'').toLowerCase();
+  const themes=[['dragon','Dragon'],['skull','Skull'],['heart','Heart'],['crown','Crown'],['star','Star'],['eagle','Eagle'],['tiger','Tiger'],['robot','Robot'],['sword','Sword'],['shield','Shield'],['fire','Fire'],['space','Space'],['spiral','Spiral'],['maze','Maze'],['circle','Geometric'],['square','Geometric'],['diamond','Diamond'],['lightning','Lightning'],['flower','Flower'],['clover','Clover'],['infinity','Infinity'],['letter','Letter'],['number','Number'],['chaos','Chaos']];
+  return themes.find(([key])=>raw.includes(key))?.[1]||'Surprise';
+}
+function pointInTheme(theme,x,y,n=22) {
+  const cx=(n-1)/2,cy=(n-1)/2,dx=x-cx,dy=y-cy,r=Math.hypot(dx,dy);
+  if(theme==='Heart') return (dx*dx+Math.pow(dy-Math.abs(dx)*.65,2)<42&&dy<5)||(r<5);
+  if(theme==='Star') {const a=Math.atan2(dy,dx);const rr=8*Math.cos(5*a)+11;return r<Math.max(0,rr);}
+  if(theme==='Geometric') return r>7&&r<9.5;
+  if(theme==='Spiral') return Math.abs(r-(2*aWrap(dx,dy)))<1.0;
+  if(theme==='Skull') return (Math.abs(dx)<7&&Math.abs(dy)<6)||(Math.abs(dx)<3&&dy>4&&dy<9);
+  if(theme==='Crown') return dy>-2&&dy<7&&Math.abs(dx)<9&&((Math.abs(dx)>5&&dy<2)||Math.abs(dx)<7);
+  if(theme==='Sword') return Math.abs(dx)<2||(Math.abs(dy)<2&&dy<-3);
+  if(theme==='Shield') return (dx*dx/70)+(dy*dy/100)<1&&dy>-8;
+  if(theme==='Fire') return r<8&&dy<5&&Math.sin(dx*1.4+dy*.8)>-.4;
+  if(theme==='Robot') return (Math.abs(dx)<7&&Math.abs(dy)<7)||(Math.abs(dx)<9&&dy>5&&dy<9);
+  if(theme==='Dragon') return (Math.abs(dx)<3&&dy<7)||(Math.abs(dx)>3&&Math.abs(dx)<9&&dy>0&&dy<5)||(dx*dx/70+dy*dy/35<1&&dy<0);
+  if(theme==='Eagle'||theme==='Tiger') return Math.abs(dx)<2||(Math.abs(dx)>2&&Math.abs(dx)<10&&Math.abs(dy)<Math.max(1,7-Math.abs(dx)*.45));
+  if(theme==='Maze') return (Math.abs(dx)%4<1||Math.abs(dy)%4<1)&&r<10;
+  if(theme==='Space'||theme==='Flower') return r<9&&((Math.round(x*7+y*13)%17)===0||r<4);
+  if(theme==='Diamond') return Math.abs(dx)+Math.abs(dy)<10;
+  if(theme==='Lightning') return Math.abs(dx+dy*.55)<1.5||Math.abs(dx-dy*.55)<1.5;
+  if(theme==='Clover') return ((dx-4)**2+(dy-4)**2<25)||((dx+4)**2+(dy-4)**2<25)||((dx-4)**2+(dy+4)**2<25)||((dx+4)**2+(dy+4)**2<25);
+  if(theme==='Infinity') return Math.abs(((dx*dx)/20-(dy*dy)/16)-1)<1.4;
+  if(theme==='Letter'||theme==='Number') return Math.abs(dx)<1.5||Math.abs(dy)<1.5||Math.abs(dx-dy)<1.5||Math.abs(dx+dy)<1.5;
+  if(theme==='Chaos') return ((x*17+y*31)%7)<3&&r<10;
+  return r<8;
+}
+function aWrap(x,y){const a=Math.atan2(y,x);return (a+Math.PI)/(2*Math.PI)*8;}
+
+function buildCreativeBlueprint(th, purpose, prompt, idea={}) {
+  const theme=creativeThemeFromPrompt(prompt,idea.visualPattern||idea.icon); const n=22,placements=[]; const cx=Math.floor(n/2),cy=Math.floor(n/2);
+  placements.push({id:'town_hall',x:cx-1,y:cy-1,w:2,h:2,category:'core'});
+  const defenseIds=['inferno_tower','x_bow','air_defense','wizard_tower','archer_tower','cannon']; let di=0;
+  const density=Math.max(.12,Math.min(.45,Number(idea.density||.28)));
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) {
+    if(x>=cx-1&&x<=cx&&y>=cy-1&&y<=cy) continue;
+    if(!pointInTheme(theme,x,y,n)) continue;
+    if(x===0||y===0||x===n-1||y===n-1) continue;
+    const hash=((x*37+y*61)%100)/100;
+    if(hash<density && placements.length<90) placements.push({id:'wall',x,y,w:1,h:1,category:'wall'});
+    else if(hash<density+.12 && placements.length<52) placements.push({id:defenseIds[di++%defenseIds.length],x,y,w:1,h:1,category:'defense'});
+  }
+  const occupied=new Set(),valid=[]; for(const p of placements){const key=`${p.x},${p.y}`;if(!occupied.has(key)){occupied.add(key);valid.push(p);}}
+  return {townHall:th,purpose,theme,prompt,idea,gridSize:n,placements:valid,validation:{ok:true,level:'structural',issues:[]},note:'AI-designed creative blueprint rendered by the server. It is a concept/export blueprint, not an official OpenLayout export.'};
+}
+
+app.post('/api/coc/generate-base-ideas', async (req,res)=>{
+  const th=validTH(req.body?.townHall); if(!th)return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  if(th<4)return res.status(400).json({error:'Creative AI bases start at Town Hall 4.'});
+  const category=CREATIVE_CATEGORIES.includes(String(req.body?.category||''))?String(req.body.category):'AI Surprise';
+  const prompt=String(req.body?.prompt||'').trim();
+  try{
+    try{
+      const ai=await askAiForCreativeIdeas(th,category,prompt);
+      return res.json({success:true,townHall:th,category,prompt,ideas:ai.ideas,generationMode:'ai-creative-ideas',model:ai.model,strategySource:'AI'});
+    }catch(e){
+      const ideas=fallbackCreativeIdeas(th,category,prompt);
+      return res.json({success:true,townHall:th,category,prompt,ideas,generationMode:'verified-creative-fallback',model:null,strategySource:'verified-server-fallback',providerReason:e?.message||'AI provider unavailable'});
+    }
+  }catch(e){return res.status(500).json({error:e?.message||'Creative idea generation failed.'});}
+});
+
+app.post('/api/coc/generate-base-blueprint', async (req,res)=>{
+  const th=validTH(req.body?.townHall); if(!th)return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  if(th<4)return res.status(400).json({error:'Creative base blueprints start at Town Hall 4.'});
+  const prompt=String(req.body?.prompt||'').trim()||'Surprise me with a creative base shape.';
+  const purpose=String(req.body?.basePurpose||'AI Surprise').trim();
+  const idea=req.body?.idea&&typeof req.body.idea==='object'?req.body.idea:{};
+  try{
+    let refinedIdea={...idea},model=null,generationMode='ai-blueprint';
+    if(process.env.OPENROUTER_API_KEY){
+      try{
+        const ai=await askAiForCreativeIdeas(th,purpose,prompt);
+        const wanted=String(idea?.title||'').toLowerCase();
+        refinedIdea=ai.ideas.find(x=>String(x.title).toLowerCase()===wanted)||ai.ideas[0]||refinedIdea;
+        model=ai.model;
+      }catch(e){generationMode='verified-blueprint-fallback';refinedIdea={...fallbackCreativeIdeas(th,purpose,prompt)[0],...idea};}
+    }else generationMode='verified-blueprint-fallback';
+    const selected=buildCreativeBlueprint(th,purpose,prompt,refinedIdea);
+    return res.json({success:true,townHall:th,generationMode,strategySource:generationMode==='ai-blueprint'?'AI':'verified-server-fallback',model,selected,candidates:[selected],export:{openLayout:false,jsonBlueprint:true},provider:generationMode==='ai-blueprint'?'OpenRouter creative model':'verified-server-creative-engine'});
+  }catch(e){return res.status(500).json({error:e?.message||'Creative blueprint generation failed.'});}
+});
+
 app.get('/api/coc/base-catalog-status', async (req, res) => {
   const th = validTH(req.query.townHall);
   if (!th) return res.status(400).json({ error: 'townHall must be an integer from 1 to 18.' });
@@ -474,7 +691,7 @@ app.post('/api/coc/generate-base', async (req, res) => {
           : `AI selected ${baseType}. The server selected and validated a matching TH${th} community layout link.`
     });
   } catch (e) {
-    console.error('CoC V10 base generation error:', e);
+    console.error('CoC V12 base generation error:', e);
     res.status(e?.name === 'AbortError' ? 504 : 500).json({ error: e?.name === 'AbortError' ? 'Base catalog or AI provider timed out.' : (e.message || 'Unable to generate base.') });
   }
 });

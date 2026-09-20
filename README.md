@@ -1,46 +1,33 @@
-# Jagathish Backend — CoC AI V9.1
+# Jagathish Backend — CoC AI V12
 
-V9 keeps the V8 verified Army Generator and adds an AI Base Generator.
+V12 keeps the verified Army Generator and expands the Base side into an AI Creative Base Lab.
 
-## Army generator
+## Base endpoints
 
-- `GET /api/coc/game-data?townHall=5`
-- `POST /api/coc/generate-army`
-- AI chooses a strategy only.
-- The server builds the exact roster from verified ClashArmies data and validates capacities/unlocks.
-- AI provider failure falls back to a deterministic verified strategy.
-- Returns a real `CopyArmy` deep link when the generated roster can be encoded.
+- `GET /api/coc/base-catalog-status?townHall=10`
+- `POST /api/coc/generate-base` — verified community OpenLayout selection for War/Farm/Trophy/Hybrid.
+- `POST /api/coc/generate-base-ideas` — AI invents three creative concepts for the selected Town Hall and category.
+- `POST /api/coc/generate-base-blueprint` — turns a selected AI concept into a structured visual blueprint.
 
-## Base generator
+## AI creative categories
 
-- `GET /api/coc/base-catalog-status?townHall=5`
-- `POST /api/coc/generate-base`
-- User supplies only Town Hall.
-- AI chooses a base purpose (`War`, `Farm`, `Trophy`, `Hybrid`, `Home Village`, etc.) from the available catalog for that Town Hall.
-- The server selects a matching community layout instead of inventing layout bytes.
-- The returned `OpenLayout` link is structurally validated before it reaches the frontend.
-- AI provider failure falls back to a deterministic base-purpose selection.
+The frontend exposes broad directions such as Fun, Character, Creature, Icon/Symbol, Shape/Pattern, Maze/Puzzle, Meme/Troll, Theme, Fantasy, Letter/Number, Abstract, Experimental, and AI Surprise.
 
-### Community base catalog
+The AI is allowed to invent more specific sub-concepts. The server does not treat those creative blueprints as official Supercell OpenLayout exports.
 
-V9 reads the public community catalog maintained at:
+## Reliability model
 
-`https://github.com/nschmeller/clash-bases`
+1. AI creates the creative concept.
+2. The server normalizes and renders a deterministic structured blueprint.
+3. The result is explicitly labelled as a creative blueprint when it is not a real OpenLayout.
+4. Community bases continue to use real catalog links and server validation.
 
-The catalog itself credits upstream base sources/builders. V9 does not rewrite layout payloads. It filters by Town Hall/type and returns the catalogued deep link.
+## Image AI
 
-Base links are community content and are not official Supercell API data. Clash of Clans and Supercell are trademarks of Supercell Oy; this project is an independent fan tool.
+V12 does not automatically generate paid images. The architecture leaves image generation as an optional next layer. If an image model is configured later, the visual concept can be generated separately from the structured layout blueprint.
 
 ## Environment
 
-- `SUPABASE_KEY`
-- `SUPABASE_URL`
 - `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL` (defaults to `openrouter/free` and resolves to the configured free model mapping)
-
-## Build marker
-
-`V9 · 2026-09-20`
-
-
-V9.1 fix: the upstream nschmeller/clash-bases `bases.json` export is currently wrapped as `{ "bases": [...] }`; the loader now accepts that shape as well as an older top-level array.
+- `OPENROUTER_MODEL` (default `openrouter/free`, internally mapped to the configured free model)
+- Existing Supabase variables remain unchanged.
