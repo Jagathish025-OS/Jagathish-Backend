@@ -44,3 +44,8 @@ Base links are community content and are not official Supercell API data. Clash 
 
 
 V9.1 fix: the upstream nschmeller/clash-bases `bases.json` export is currently wrapped as `{ "bases": [...] }`; the loader now accepts that shape as well as an older top-level array.
+
+### V11.5 object catalog and scoring
+`base-object-catalog.json` is the single data-driven source for Home Village object type, footprint, unlock Town Hall, and conservative engine count limits. `base-scoring-engine.js` scores compiled layouts by purpose. These are engine-layer facts, not an official Supercell export schema.
+
+Current TH18 sources used during implementation: Supercell's TH18 launch notes and August 2026 update notes; independent current references confirm Super Wizard Tower is 3x3 and up to two at TH18, and Firespitter is 3x3 with two copies from TH17 onward.

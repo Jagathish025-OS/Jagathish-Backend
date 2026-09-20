@@ -2,6 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const COC_GAME_DATA = require("./data/coc-game-data.json");
+const { catalogSummary, placeCreativeBlueprint } = require('./base-placement-engine');
+const { scoreBase } = require('./base-scoring-engine');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,7 +14,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V10 · 2026-09-20";
+const BACKEND_BUILD = "V11.5 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -486,8 +488,36 @@ app.post('/api/coc/generate-base-blueprint', async (req,res)=>{
   const purpose=String(req.body?.basePurpose || 'Creative').trim();
   try {
     const candidates=Array.from({length:3},(_,i)=>buildCreativeBlueprint(th,purpose, i===0?prompt:`${prompt} variation ${i+1}`));
-    return res.json({townHall:th, generationMode:'creative-blueprint', candidates, selected:candidates[0], export:{openLayout:false,jsonBlueprint:true,verifiedOpenLayout:false}, provider:'deterministic-creative-engine-v2'});
+    const compiled = placeCreativeBlueprint(candidates[0], th);
+    return res.json({townHall:th, generationMode:'creative-blueprint', candidates, selected:candidates[0], compiled:{format:'jagathish-coc-real-layout-v2',gridSize:44,coordinateSystem:'coc-game-grid-v1',sourceGridSize:candidates[0].gridSize,placements:compiled.placements,inventory:compiled.inventoryUsed,validation:{ok:compiled.ok,issues:compiled.issues},score:scoreBase({placements:compiled.placements},purpose,44),openLayout:false,verifiedOpenLayout:false}, export:{openLayout:false,jsonBlueprint:true,verifiedOpenLayout:false}, provider:'deterministic-creative-engine-v3'});
   } catch(e){ return res.status(500).json({error:e?.message || 'Creative blueprint generation failed.'}); }
+});
+
+app.post('/api/coc/compile-base-blueprint', async (req,res)=>{
+  const th=validTH(req.body?.townHall);
+  if(!th) return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  if(th<4) return res.status(400).json({error:'Creative base blueprints start at Town Hall 4.'});
+  const blueprint=req.body?.blueprint;
+  if(!blueprint || !Array.isArray(blueprint.placements)) return res.status(400).json({error:'blueprint.placements is required.'});
+  try {
+    const compiled=placeCreativeBlueprint(blueprint,th);
+    return res.json({townHall:th,format:'jagathish-coc-real-layout-v2',gridSize:44,coordinateSystem:'coc-game-grid-v1',sourceGridSize:blueprint.gridSize||22,placements:compiled.placements,inventory:compiled.inventoryUsed,validation:{ok:compiled.ok,issues:compiled.issues},score:scoreBase({placements:compiled.placements},String(req.body?.basePurpose||'Creative'),44),export:{openLayout:false,verifiedOpenLayout:false},catalogVersion:'home-village-catalog-2026-09'});
+  } catch(e){ return res.status(500).json({error:e?.message || 'Blueprint compilation failed.'}); }
+});
+
+app.get('/api/coc/object-catalog', (req,res) => {
+  const th = validTH(req.query.townHall);
+  if (!th) return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  res.json({townHall:th, version:'home-village-catalog-2026-09', coordinateSystem:'coc-game-grid-v1', objects:catalogSummary(th)});
+});
+
+app.post('/api/coc/score-base-blueprint', (req,res) => {
+  const th = validTH(req.body?.townHall);
+  if (!th) return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  const layout = req.body?.layout;
+  if (!layout || !Array.isArray(layout.placements)) return res.status(400).json({error:'layout.placements is required.'});
+  const purpose=String(req.body?.basePurpose||'Creative');
+  res.json({townHall:th,purpose,score:scoreBase(layout,purpose,44),catalogVersion:'home-village-catalog-2026-09'});
 });
 
 app.get('/api/coc/base-catalog-status', async (req, res) => {
