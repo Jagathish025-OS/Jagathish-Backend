@@ -1,8 +1,9 @@
-Jagathish Backend V4 — CoC AI reliability build.
+Jagathish Backend V5 — universal CoC AI army generation reliability.
 
-- Preserves verified Clash Armies game data.
-- Keeps own siege machines separate from donated Clan Castle siege machines.
-- Uses OpenRouter with reasoning disabled for this short structured generation task.
-- Retries once if a routed free model returns empty final content.
-- Adds request timeout and useful server logs.
-- Server-side validation remains authoritative.
+- Uses a known free OpenRouter model when OPENROUTER_MODEL is openrouter/free.
+- Uses JSON object response mode instead of a complex JSON schema.
+- Retries malformed JSON once.
+- Server repairs AI candidates: removes unknown/duplicate heroes, invalid pets/equipment, trims troop/spell/Clan Castle capacity, and validates siege availability.
+- If the AI output is unusable, the server creates a verified fallback army.
+- Final output is always passed through the existing server validator before being returned.
+- Verified Clash Armies game-data source and siege distinction are preserved.

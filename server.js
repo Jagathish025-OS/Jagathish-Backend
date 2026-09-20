@@ -6,10 +6,15 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const CONFIGURED_OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+// The free router can select different models per request. For strict JSON army
+// generation we prefer a known free model with JSON response support.
+const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
+  ? "google/gemma-4-26b-a4b-it:free"
+  : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies-game-data@0.12.5 (2026-09-05)";
 const COC_DATA_SOURCE = "Uploaded Clash Armies structured game-data.json5";
-const BACKEND_BUILD = "V4 · 2026-09-20";
+const BACKEND_BUILD = "V5 · 2026-09-20";
 const COC_GAME_DATA = require("./data/coc-game-data.json");
 
 app.use(cors({
@@ -742,6 +747,148 @@ function buildPrompt(data, preferences) {
   ].join("\n\n");
 }
 
+
+function fitCountList(list, verifiedList, capacity) {
+  const merged = new Map();
+  for (const item of normalizeList(list)) {
+    const verified = findByName(verifiedList, item.name);
+    if (!verified) continue;
+    const key = verified.name.toLowerCase();
+    merged.set(key, {
+      name: verified.name,
+      count: (merged.get(key)?.count || 0) + item.count,
+      housingSpace: Number(verified.housingSpace || 0)
+    });
+  }
+
+  const result = [...merged.values()].map(({ name, count }) => ({ name, count }));
+  let total = result.reduce((sum, item) => {
+    const verified = findByName(verifiedList, item.name);
+    return sum + item.count * Number(verified?.housingSpace || 0);
+  }, 0);
+
+  // Trim from the end until the list fits the verified capacity.
+  for (let i = result.length - 1; i >= 0 && total > capacity; i--) {
+    const verified = findByName(verifiedList, result[i].name);
+    const space = Number(verified?.housingSpace || 0);
+    if (!space) continue;
+    const removable = Math.min(result[i].count, Math.ceil((total - capacity) / space));
+    result[i].count -= removable;
+    total -= removable * space;
+  }
+
+  return result.filter(item => item.count > 0);
+}
+
+function fallbackTroops(data) {
+  const preferred = [
+    "Barbarian", "Archer", "Giant", "Wizard", "Balloon",
+    "Hog Rider", "Valkyrie", "Minion", "Dragon", "P.E.K.K.A"
+  ];
+  const ordered = [
+    ...preferred.map(name => findByName(data.troops, name)).filter(Boolean),
+    ...data.troops
+  ];
+  const chosen = [];
+  let remaining = Number(data.army.totalCapacity || 0);
+
+  for (const troop of ordered) {
+    if (!remaining) break;
+    const space = Number(troop.housingSpace || 0);
+    if (!space) continue;
+    const count = Math.floor(remaining / space);
+    if (count > 0) {
+      chosen.push({ name: troop.name, count });
+      remaining -= count * space;
+    }
+  }
+
+  return chosen;
+}
+
+function repairArmyCandidate(output, data) {
+  const source = output?.army || {};
+
+  const troops = fitCountList(source.troops, data.troops, data.army.totalCapacity);
+  const spells = fitCountList(source.spells, data.spells, data.spellCapacity);
+  const clanCastleTroops = fitCountList(
+    source.clanCastleTroops,
+    data.troops,
+    data.clanCastle.troopCapacity
+  );
+  const clanCastleSpells = fitCountList(
+    source.clanCastleSpells,
+    data.spells,
+    data.clanCastle.spellCapacity
+  );
+
+  const heroes = [];
+  const seenHeroes = new Set();
+  for (const raw of Array.isArray(source.heroes) ? source.heroes : []) {
+    const hero = findByName(data.heroes, raw);
+    if (!hero || seenHeroes.has(hero.id)) continue;
+    seenHeroes.add(hero.id);
+    heroes.push(hero.name);
+  }
+
+  const pets = [];
+  const petHeroes = new Set();
+  const seenPetPairs = new Set();
+  for (const pair of Array.isArray(source.pets) ? source.pets : []) {
+    const pet = findByName(data.pets, pair?.pet);
+    const hero = findByName(data.heroes, pair?.hero);
+    if (!pet || !hero || !seenHeroes.has(hero.id)) continue;
+    const pairKey = `${hero.id}|${pet.name.toLowerCase()}`;
+    if (seenPetPairs.has(pairKey) || petHeroes.has(hero.id)) continue;
+    seenPetPairs.add(pairKey);
+    petHeroes.add(hero.id);
+    pets.push({ hero: hero.name, pet: pet.name });
+  }
+
+  const equipment = [];
+  const equipmentSlots = new Map();
+  for (const pair of Array.isArray(source.equipment) ? source.equipment : []) {
+    const item = findByName(data.equipment, pair?.equipment);
+    const hero = findByName(data.heroes, pair?.hero);
+    if (!item || !hero || !seenHeroes.has(hero.id)) continue;
+    if (item.hero && String(item.hero).toLowerCase() !== hero.name.toLowerCase()) continue;
+    const count = equipmentSlots.get(hero.id) || 0;
+    if (count >= 2) continue;
+    equipmentSlots.set(hero.id, count + 1);
+    equipment.push({ hero: hero.name, equipment: item.name });
+  }
+
+  let siegeMachine = null;
+  if (source.siegeMachine) {
+    const siege = findByName(
+      data.clanCastleSiegeMachines || data.siegeMachines,
+      source.siegeMachine
+    );
+    if (siege && Number(data.clanCastle.siegeMachineCapacity || 0) > 0) {
+      siegeMachine = siege.name;
+    }
+  }
+
+  const repaired = {
+    troops: troops.length ? troops : fallbackTroops(data),
+    spells,
+    siegeMachine,
+    clanCastleTroops,
+    clanCastleSpells,
+    heroes,
+    pets,
+    equipment
+  };
+
+  return {
+    army: repaired,
+    attackGuide: Array.isArray(output?.attackGuide) ? output.attackGuide : [],
+    summary: typeof output?.summary === "string" && output.summary.trim()
+      ? output.summary
+      : "Army generated from verified Town Hall data."
+  };
+}
+
 app.post("/api/coc/generate-army", async (req, res) => {
   if (!process.env.OPENROUTER_API_KEY) {
     return res.status(503).json({ error: "OPENROUTER_API_KEY is not configured on the backend." });
@@ -755,29 +902,13 @@ app.post("/api/coc/generate-army", async (req, res) => {
     const messages = [
       {
         role: "system",
-        content: "Return only the requested JSON object. Never invent facts outside the provided verified game data."
+        content: "Return one valid JSON object only. Use only the verified game data. Never invent a unit, hero, pet, equipment, or capacity."
       },
       {
         role: "user",
         content: buildPrompt(data, req.body?.preferences)
       }
     ];
-
-    const structuredBody = {
-      model: OPENROUTER_MODEL,
-      temperature: 0.2,
-      max_tokens: 4000,
-      reasoning: { effort: "none" },
-      messages,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "coc_army",
-          strict: true,
-          schema: armySchema
-        }
-      }
-    };
 
     async function callOpenRouter(body, label) {
       const controller = new AbortController();
@@ -799,14 +930,16 @@ app.post("/api/coc/generate-army", async (req, res) => {
         let parsed;
         try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
 
+        const message = parsed?.choices?.[0]?.message;
+        const content = message?.content;
         console.log(
           `OpenRouter ${label}: status=${response.status}, model=${parsed?.model || "unknown"}, ` +
           `finish=${parsed?.choices?.[0]?.finish_reason || "unknown"}, ` +
-          `contentLength=${typeof parsed?.choices?.[0]?.message?.content === "string" ? parsed.choices[0].message.content.length : 0}`
+          `contentLength=${typeof content === "string" ? content.length : Array.isArray(content) ? content.length : 0}`
         );
 
         if (!response.ok) {
-          console.error("OpenRouter error:", response.status, raw.slice(0, 1200));
+          console.error("OpenRouter error:", response.status, raw.slice(0, 1600));
           throw new Error(`AI provider request failed (${response.status}).`);
         }
 
@@ -816,63 +949,73 @@ app.post("/api/coc/generate-army", async (req, res) => {
       }
     }
 
-    let parsed = await callOpenRouter(structuredBody, "structured");
-    let content = parsed?.choices?.[0]?.message?.content;
+    const requestBody = {
+      model: OPENROUTER_MODEL,
+      temperature: 0.2,
+      max_tokens: 5000,
+      reasoning: { effort: "none" },
+      messages,
+      response_format: { type: "json_object" }
+    };
 
-    // Some routed reasoning models can consume the completion budget without
-    // emitting final content. Retry once with plain JSON instructions and no
-    // response_format so the router can select another compatible free model.
-    if (!content || (typeof content === "string" && !content.trim())) {
-      console.warn("OpenRouter returned empty final content; retrying with plain JSON mode.");
+    let parsed = await callOpenRouter(requestBody, "json-object");
+    let content = parsed?.choices?.[0]?.message?.content;
+    let aiOutput = null;
+
+    try {
+      aiOutput = cleanJsonText(content);
+    } catch (firstParseError) {
+      console.warn("First AI JSON parse failed; retrying with explicit JSON-only instruction.");
       const retryBody = {
         model: OPENROUTER_MODEL,
-        temperature: 0.2,
-        max_tokens: 5000,
+        temperature: 0.1,
+        max_tokens: 6000,
         reasoning: { effort: "none" },
         messages: [
           ...messages,
           {
             role: "user",
-            content: "IMPORTANT: Output the complete JSON object now. Do not explain anything. Do not use markdown fences."
+            content: "Output the complete JSON object now. No markdown. No comments. Ensure every array and object is closed and the JSON parses."
           }
-        ]
+        ],
+        response_format: { type: "json_object" }
       };
-      parsed = await callOpenRouter(retryBody, "plain-json-retry");
+      parsed = await callOpenRouter(retryBody, "json-retry");
       content = parsed?.choices?.[0]?.message?.content;
+      try {
+        aiOutput = cleanJsonText(content);
+      } catch (secondParseError) {
+        console.warn("Second AI JSON parse failed; using verified server fallback.");
+      }
     }
 
-    if (!content || (typeof content === "string" && !content.trim())) {
-      const finishReason = parsed?.choices?.[0]?.finish_reason || "unknown";
-      console.error("OpenRouter returned no final content after retry:", JSON.stringify({
-        model: parsed?.model,
-        finishReason,
-        usage: parsed?.usage || null
-      }));
-      return res.status(502).json({
-        error: "AI provider returned no final answer. Please try Generate Army again.",
-        providerStatus: 200,
-        finishReason
-      });
-    }
-
-    const aiOutput = cleanJsonText(content);
-    const validation = validateArmy(aiOutput, data);
+    // AI is responsible for strategy; the server is responsible for legality.
+    // Repairing a candidate avoids rejecting otherwise useful strategy because
+    // a free model duplicated a hero or overshot a capacity.
+    const repaired = repairArmyCandidate(aiOutput || {}, data);
+    const validation = validateArmy(repaired, data);
 
     if (!validation.ok) {
-      return res.status(422).json({
-        error: "AI generated an invalid army; it was blocked by the server validator.",
+      console.error("Repair could not produce a valid army:", validation.errors);
+      return res.status(500).json({
+        error: "The server could not construct a valid army from the verified Town Hall data.",
         validationErrors: validation.errors
       });
     }
+
+    const repairedChanged = JSON.stringify(repaired.army) !== JSON.stringify(aiOutput?.army || {});
 
     res.json({
       success: true,
       townHall: th,
       dataVersion: COC_DATA_VERSION,
       model: parsed?.model || OPENROUTER_MODEL,
+      repairApplied: repairedChanged,
       army: validation.normalized,
-      attackGuide: aiOutput.attackGuide || [],
-      summary: aiOutput.summary || "",
+      attackGuide: repaired.attackGuide,
+      summary: repairedChanged
+        ? `${repaired.summary} Server normalization was applied to keep every item within verified Town Hall limits.`
+        : repaired.summary,
       totals: validation.totals
     });
   } catch (err) {
