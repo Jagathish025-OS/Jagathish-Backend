@@ -291,7 +291,7 @@ function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCou
 
 
 
-// ---------------- AI BASE GENERATOR V9 ----------------
+// ---------------- AI BASE GENERATOR V11 ----------------
 // Base layouts are community-shared deep links. We do not synthesize or alter layout payloads;
 // the server selects a verified catalog entry matching the requested Town Hall and validates
 // its Supercell share-link structure before returning it.
@@ -392,6 +392,71 @@ function selectBase(entries, th, baseType) {
   // making a subjective "best base" claim.
   return [...pool].sort((a,b) => String(b.added || '').localeCompare(String(a.added || '')) || String(a.id || '').localeCompare(String(b.id || '')))[0];
 }
+
+
+function creativeThemeFromPrompt(prompt) {
+  const p = String(prompt || '').toLowerCase();
+  const themes = [
+    ['dragon', 'Dragon'], ['skull', 'Skull'], ['heart', 'Heart'], ['crown', 'Crown'],
+    ['star', 'Star'], ['eagle', 'Eagle'], ['tiger', 'Tiger'], ['robot', 'Robot'],
+    ['sword', 'Sword'], ['shield', 'Shield'], ['fire', 'Fire'], ['space', 'Space'],
+    ['spiral', 'Spiral'], ['maze', 'Maze'], ['circle', 'Geometric'], ['square', 'Geometric']
+  ];
+  return themes.find(([key]) => p.includes(key))?.[1] || 'Surprise';
+}
+
+function pointInTheme(theme, x, y, n=22) {
+  const cx=(n-1)/2, cy=(n-1)/2, dx=x-cx, dy=y-cy;
+  const r=Math.hypot(dx,dy);
+  if (theme==='Heart') return (dx*dx+Math.pow(dy-Math.abs(dx)*0.65,2) < 42 && dy<5) || (r<5);
+  if (theme==='Star') { const a=Math.atan2(dy,dx); const rr=8*Math.cos(5*a)+11; return r<Math.max(0,rr); }
+  if (theme==='Circle'||theme==='Geometric') return r>7 && r<9.5;
+  if (theme==='Spiral') return Math.abs(r-(2.0*aWrap(dx,dy)))<1.0;
+  if (theme==='Skull') return (Math.abs(dx)<7 && Math.abs(dy)<6) || (Math.abs(dx)<3 && dy>4 && dy<9);
+  if (theme==='Crown') return (dy>-2&&dy<7&&Math.abs(dx)<9&&((Math.abs(dx)>5&&dy<2)||Math.abs(dx)<7));
+  if (theme==='Sword') return Math.abs(dx)<2 || (Math.abs(dy)<2&&dy<-3);
+  if (theme==='Shield') return (dx*dx/70)+(dy*dy/100)<1 && dy>-8;
+  if (theme==='Fire') return r<8 && dy<5 && Math.sin(dx*1.4+dy*.8)>-.4;
+  if (theme==='Robot') return (Math.abs(dx)<7&&Math.abs(dy)<7) || (Math.abs(dx)<9&&dy>5&&dy<9);
+  if (theme==='Dragon') return (Math.abs(dx)<3&&dy<7) || (Math.abs(dx)>3&&Math.abs(dx)<9&&dy>0&&dy<5) || (dx*dx/70+dy*dy/35<1&&dy<0);
+  if (theme==='Eagle'||theme==='Tiger') return Math.abs(dx)<2 || (Math.abs(dx)>2&&Math.abs(dx)<10&&Math.abs(dy)<Math.max(1,7-Math.abs(dx)*.45));
+  if (theme==='Maze') return (Math.abs(dx)%4<1 || Math.abs(dy)%4<1) && r<10;
+  if (theme==='Space') return r<9 && ((Math.round(x*7+y*13)%17)===0 || r<4);
+  return r<8;
+}
+function aWrap(x,y){ const a=Math.atan2(y,x); return (a+Math.PI)/(2*Math.PI)*8; }
+
+function buildCreativeBlueprint(th, purpose, prompt) {
+  const theme = creativeThemeFromPrompt(prompt);
+  const n=22, placements=[];
+  const cx=Math.floor(n/2), cy=Math.floor(n/2);
+  placements.push({id:'town_hall',x:cx-1,y:cy-1,w:2,h:2,category:'core'});
+  const defenseIds=['inferno_tower','x_bow','air_defense','wizard_tower','archer_tower','cannon'];
+  let di=0;
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) {
+    if(x>=cx-1&&x<=cx&&y>=cy-1&&y<=cy) continue;
+    if(!pointInTheme(theme,x,y,n)) continue;
+    const edge = x===0||y===0||x===n-1||y===n-1;
+    if(edge) continue;
+    if(((x+y)%3)===0 && placements.length<70) placements.push({id:'wall',x,y,w:1,h:1,category:'wall'});
+    else if(((x*7+y*11)%5)===0 && placements.length<46) { const id=defenseIds[di++%defenseIds.length]; placements.push({id,x,y,w:1,h:1,category:'defense'}); }
+  }
+  const occupied=new Set(); const valid=[];
+  for(const p of placements){ const key=`${p.x},${p.y}`; if(!occupied.has(key)){occupied.add(key);valid.push(p);} }
+  return {townHall:th,purpose,theme,prompt,gridSize:n,placements:valid,validation:{ok:true,level:'structural',issues:[]},note:'Creative blueprint is a visual/structured concept. It is not an official OpenLayout export.'};
+}
+
+app.post('/api/coc/generate-base-blueprint', async (req,res)=>{
+  const th=validTH(req.body?.townHall);
+  if(!th) return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  if(th<4) return res.status(400).json({error:'Creative base blueprints start at Town Hall 4.'});
+  const prompt=String(req.body?.prompt || '').trim() || 'Surprise me with a creative base shape.';
+  const purpose=String(req.body?.basePurpose || 'Creative').trim();
+  try {
+    const candidates=Array.from({length:3},(_,i)=>buildCreativeBlueprint(th,purpose, i===0?prompt:`${prompt} variation ${i+1}`));
+    return res.json({townHall:th, generationMode:'creative-blueprint', candidates, selected:candidates[0], export:{openLayout:false,jsonBlueprint:true}, provider:'deterministic-creative-engine'});
+  } catch(e){ return res.status(500).json({error:e?.message || 'Creative blueprint generation failed.'}); }
+});
 
 app.get('/api/coc/base-catalog-status', async (req, res) => {
   const th = validTH(req.query.townHall);
