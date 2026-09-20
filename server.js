@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V14 · 2026-09-20";
+const BACKEND_BUILD = "V15 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -296,8 +296,10 @@ function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCou
 // the server selects a verified catalog entry matching the requested Town Hall and validates
 // its Supercell share-link structure before returning it.
 const BASE_CATALOG_URL = 'https://raw.githubusercontent.com/nschmeller/clash-bases/main/bases.json';
+const LIVE_BASE_SOURCE = 'https://coclayouts.harshitrv.in/town-hall/';
 const BASE_CATALOG_TTL_MS = 10 * 60 * 1000;
-let baseCatalogCache = { loadedAt: 0, entries: null };
+const LIVE_BASE_TTL_MS = 10 * 60 * 1000;
+let baseCatalogCache = { loadedAt: 0, entries: null, source: null };
 
 function decodeOpenLayoutPayload(blob) {
   try {
@@ -328,26 +330,71 @@ function validBaseLink(link, th) {
     return !!payload && payload.slot>=1 && payload.slot<=3 && payload.index<1000 && payload.tagEntropy>=2.5 && !payload.pathological;
   } catch (_) { return false; }
 }
-
-async function loadBaseCatalog() {
-  if (baseCatalogCache.entries && Date.now() - baseCatalogCache.loadedAt < BASE_CATALOG_TTL_MS) {
-    return baseCatalogCache.entries;
+function classifyLiveBase(text) {
+  const t=String(text||'').toLowerCase();
+  if(t.includes('troll')||t.includes('fun')) return 'Fun';
+  if(t.includes('war')||t.includes('cwl')) return 'War';
+  if(t.includes('farm')||t.includes('farming')||t.includes('loot')) return 'Farm';
+  if(t.includes('trophy')||t.includes('legend')) return 'Trophy';
+  if(t.includes('hybrid')) return 'Hybrid';
+  if(t.includes('defence')||t.includes('defense')) return 'Defence';
+  return 'Home Village';
+}
+function decodeHtml(s){return String(s||'').replace(/&amp;/g,'&').replace(/&#x2F;/g,'/').replace(/&#47;/g,'/').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ');}
+function parseLiveTownHallPage(html, th) {
+  const out=[];
+  const anchorRe=/<a[^>]+href=["'](https:\/\/link\.clashofclans\.com\/[^"']*action=OpenLayout[^"']*)["'][^>]*>\s*(?:Open in game|Open in game)[^<]*<\/a>/gi;
+  let m;
+  while((m=anchorRe.exec(html))){
+    const link=decodeHtml(m[1]);
+    if(!validBaseLink(link,th))continue;
+    const windowText=decodeHtml(html.slice(Math.max(0,m.index-2200),m.index));
+    const h3=[...windowText.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/gi)].pop()?.[1]||'';
+    const title=h3.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()||`TH${th} Current Community Layout`;
+    const updated=(windowText.match(/updated\s+([A-Za-z]{3}\s+\d{1,2},\s+\d{4})/i)||[])[1]||'';
+    const type=classifyLiveBase(title+' '+windowText.slice(-1000));
+    const id=`live-th${th}-${out.length+1}`;
+    out.push({id,name:title.replace(/\s+with Link\s*\(#\d+\)\s*$/i,''),town_hall:th,type,link,description:`Current ClashLayouts community layout${updated?` · updated ${updated}`:''}.`,builder:'ClashLayouts current feed',tags:[type.toLowerCase(),`th${th}`,'current'],added:new Date().toISOString().slice(0,10),image:null,liveSource:true,sourcePage:`${LIVE_BASE_SOURCE}${th}`});
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
-  try {
-    const r = await fetch(BASE_CATALOG_URL, { signal: controller.signal, headers: { Accept: 'application/json' } });
-    if (!r.ok) throw new Error(`Base catalog request failed (${r.status})`);
-    const raw = await r.json();
-    // nschmeller/clash-bases currently wraps the catalogue in { bases: [...] }.
-    // Keep compatibility with older array-shaped exports as well.
-    const sourceEntries = Array.isArray(raw) ? raw : (Array.isArray(raw?.bases) ? raw.bases : null);
-    if (!sourceEntries) throw new Error('Base catalog returned an invalid payload. Expected an array or { bases: [...] }.');
-    const entries = sourceEntries.filter(x => Number.isInteger(Number(x?.town_hall)) && Number(x.town_hall) >= 4 && Number(x.town_hall) <= 18 && validBaseLink(x?.link, Number(x.town_hall)));
-    if (!entries.length) throw new Error('Base catalog contains no structurally valid layouts.');
-    baseCatalogCache = { loadedAt: Date.now(), entries };
+  const seen=new Set(); return out.filter(x=>!seen.has(x.link)&&seen.add(x.link));
+}
+async function loadLiveBaseCatalog() {
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),12000);
+  try{
+    const urls=[];
+    for(let th=4;th<=18;th++)urls.push(`${LIVE_BASE_SOURCE}${th}`);
+    const results=await Promise.all(urls.map(async url=>{
+      const r=await fetch(url,{signal:controller.signal,headers:{Accept:'text/html,application/xhtml+xml'}});
+      if(!r.ok)throw new Error(`Live base source request failed (${r.status})`);
+      const html=await r.text(); const m=url.match(/town-hall\/(\d+)/); return parseLiveTownHallPage(html,Number(m[1]));
+    }));
+    const entries=results.flat();
+    if(entries.length<20)throw new Error('Current base source returned too few playable layouts.');
     return entries;
   } finally { clearTimeout(timer); }
+}
+async function loadBaseCatalog() {
+  if (baseCatalogCache.entries && Date.now() - baseCatalogCache.loadedAt < BASE_CATALOG_TTL_MS) return baseCatalogCache.entries;
+  try {
+    const live=await loadLiveBaseCatalog();
+    baseCatalogCache={loadedAt:Date.now(),entries:live,source:'ClashLayouts current feed'};
+    return live;
+  } catch (liveError) {
+    // Emergency fallback: use the community JSON, but only keep recently added entries.
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const r = await fetch(BASE_CATALOG_URL, { signal: controller.signal, headers: { Accept: 'application/json' } });
+      if (!r.ok) throw new Error(`Base catalog request failed (${r.status})`);
+      const raw = await r.json();
+      const sourceEntries = Array.isArray(raw) ? raw : (Array.isArray(raw?.bases) ? raw.bases : null);
+      if (!sourceEntries) throw new Error('Base catalog returned an invalid payload.');
+      const cutoff=Date.now()-120*24*60*60*1000;
+      const entries=sourceEntries.filter(x=>Number.isInteger(Number(x?.town_hall))&&Number(x.town_hall)>=4&&Number(x.town_hall)<=18&&validBaseLink(x?.link,Number(x.town_hall))&&Date.parse(String(x.added||''))>=cutoff);
+      if(!entries.length) throw new Error(`Current live base source unavailable (${liveError.message}) and no recent fallback layouts are available.`);
+      baseCatalogCache={loadedAt:Date.now(),entries,source:'Recent community JSON fallback'};
+      return entries;
+    } finally { clearTimeout(timer); }
+  }
 }
 
 function baseTypesFor(entries, th) {
@@ -739,7 +786,7 @@ app.get('/api/coc/base-catalog-status', async (req, res) => {
   try {
     const entries = await loadBaseCatalog();
     const counts = baseTypesFor(entries, th);
-    res.json({ townHall: th, available: Object.values(counts).reduce((a,b)=>a+b,0), types: counts, source: 'community catalog: nschmeller/clash-bases', catalogUrl: BASE_CATALOG_URL });
+    res.json({ townHall: th, available: Object.values(counts).reduce((a,b)=>a+b,0), types: counts, source: baseCatalogCache.source || 'ClashLayouts current feed', catalogUrl: LIVE_BASE_SOURCE });
   } catch (e) {
     res.status(503).json({ error: e?.message || 'Base catalog unavailable.' });
   }
@@ -764,7 +811,7 @@ app.post('/api/coc/generate-creative-openlayout', async (req,res)=>{
     const link=chosen.entry.link;
     if(!validBaseLink(link,th)) return res.status(500).json({error:'Selected community OpenLayout failed structural validation.'});
     const e=chosen.entry;
-    return res.json({success:true,townHall:th,category,idea,prompt,generationMode,strategySource:generationMode==='ai-creative-openlayout-match'?'AI':'verified-server-fallback',model,providerReason,openLayout:{id:e.id||null,name:e.name||`TH${th} Creative Layout`,type:e.type||'Home Village',link,image:e.image||null,description:e.description||'',builder:e.builder||'Community catalog',tags:Array.isArray(e.tags)?e.tags:[],added:e.added||null,verifiedStructure:true,source:'nschmeller/clash-bases community catalog'},match:{score:chosen.score,playable:true,generatedByAI:false,aiSelected:generationMode==='ai-creative-openlayout-match'},note:'This is a genuine community OpenLayout selected to match the AI concept. The AI does not fabricate or rewrite Supercell layout payloads.'});
+    return res.json({success:true,townHall:th,category,idea,prompt,generationMode,strategySource:generationMode==='ai-creative-openlayout-match'?'AI':'verified-server-fallback',model,providerReason,openLayout:{id:e.id||null,name:e.name||`TH${th} Creative Layout`,type:e.type||'Home Village',link,image:e.image||null,description:e.description||'',builder:e.builder||'Community catalog',tags:Array.isArray(e.tags)?e.tags:[],added:e.added||null,verifiedStructure:true,source:baseCatalogCache.source || 'ClashLayouts current feed'},match:{score:chosen.score,playable:true,generatedByAI:false,aiSelected:generationMode==='ai-creative-openlayout-match'},note:'This is a genuine community OpenLayout selected to match the AI concept. The AI does not fabricate or rewrite Supercell layout payloads.'});
   }catch(e){return res.status(e?.name==='AbortError'?504:500).json({error:e?.name==='AbortError'?'Creative OpenLayout generation timed out.':(e?.message||'Creative OpenLayout generation failed.')});}
 });
 
