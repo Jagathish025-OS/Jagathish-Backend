@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V16 · 2026-09-20";
+const BACKEND_BUILD = "V16.1 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -275,7 +275,7 @@ app.post("/api/coc/generate-army",async(req,res)=>{
     const armyLink=generateArmyLink(built.army);
     const strategySource=generationMode==='ai-strategy'?'AI':'verified-server-fallback';
     res.json({success:true,townHall:th,dataVersion:COC_DATA_VERSION,model,generationMode,strategySource,providerReason,repairApplied:false,strategy,army:built.army,armyLink,attackGuide:built.attackGuide,summary:providerReason?`AI strategy provider was unavailable (${providerReason}). A deterministic ${strategy} army was generated from verified ClashArmies data.`:built.summary,totals:validation.totals});
-  }catch(e){console.error('CoC V7 generation error:',e);res.status(e?.name==='AbortError'?504:500).json({error:e?.name==='AbortError'?'AI provider timed out; a verified fallback should be used on the next request.':e.message||'Unable to generate army.'});}
+  }catch(e){console.error('CoC generation error:',e);res.status(e?.name==='AbortError'?504:500).json({error:e?.name==='AbortError'?'AI provider timed out; a verified fallback should be used on the next request.':e.message||'Unable to generate army.'});}
 });
 
 function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCountList(army.troops),spells=normalizeCountList(army.spells),ccTroops=normalizeCountList(army.clanCastleTroops),ccSpells=normalizeCountList(army.clanCastleSpells); const seen=new Set();
@@ -301,23 +301,6 @@ const BASE_CATALOG_TTL_MS = 10 * 60 * 1000;
 const LIVE_BASE_TTL_MS = 10 * 60 * 1000;
 let baseCatalogCache = { loadedAt: 0, entries: null, source: null };
 
-function decodeOpenLayoutPayload(blob) {
-  try {
-    const normalized=String(blob).replace(/-/g,'+').replace(/_/g,'/');
-    const padded=normalized + '='.repeat((4-normalized.length%4)%4);
-    const bytes=Buffer.from(padded,'base64');
-    if(bytes.length!==24)return null;
-    const index=bytes.readUInt32BE(0);
-    const slot=bytes.readUInt32BE(4);
-    const tag=bytes.subarray(8,24);
-    const counts=new Map(); for(const b of tag)counts.set(b,(counts.get(b)||0)+1);
-    let entropy=0; for(const c of counts.values()){const p=c/tag.length; entropy-=p*Math.log2(p);}
-    const printable=Array.from(tag).filter(b=>b>=0x20&&b<0x7f).length;
-    const diffs=new Set(); for(let i=1;i<tag.length;i++)diffs.add((tag[i]-tag[i-1]+256)%256);
-    const pathological=tag.every(b=>b===0)||new Set(tag).size===1||(diffs.size===1&&(diffs.has(1)||diffs.has(255)))||printable>=15;
-    return {index,slot,tagEntropy:entropy,pathological};
-  }catch(_){return null;}
-}
 function validBaseLink(link, th) {
   if (typeof link !== 'string' || !link.startsWith('https://link.clashofclans.com/')) return false;
   try {
@@ -325,9 +308,7 @@ function validBaseLink(link, th) {
     if (u.searchParams.get('action') !== 'OpenLayout') return false;
     const id = decodeURIComponent(u.searchParams.get('id') || '');
     const m = id.match(/^TH(\d+):(HV|WB):([A-Za-z0-9_-]{32})$/);
-    if(!m || Number(m[1]) !== Number(th)) return false;
-    const payload=decodeOpenLayoutPayload(m[3]);
-    return !!payload && payload.slot>=1 && payload.slot<=3 && payload.index<1000 && payload.tagEntropy>=2.5 && !payload.pathological;
+    return !!m && Number(m[1]) === Number(th);
   } catch (_) { return false; }
 }
 function classifyLiveBase(text) {
@@ -375,26 +356,27 @@ async function loadLiveBaseCatalog() {
 }
 async function loadBaseCatalog() {
   if (baseCatalogCache.entries && Date.now() - baseCatalogCache.loadedAt < BASE_CATALOG_TTL_MS) return baseCatalogCache.entries;
+  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 12000);
   try {
-    const live=await loadLiveBaseCatalog();
-    baseCatalogCache={loadedAt:Date.now(),entries:live,source:'ClashLayouts current feed'};
-    return live;
-  } catch (liveError) {
-    // Emergency fallback: use the community JSON, but only keep recently added entries.
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 12000);
+    const r = await fetch(BASE_CATALOG_URL, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error(`Base catalog request failed (${r.status})`);
+    const raw = await r.json();
+    const sourceEntries = Array.isArray(raw) ? raw : (Array.isArray(raw?.bases) ? raw.bases : null);
+    if (!sourceEntries) throw new Error('Base catalog returned an invalid payload. Expected an array or { bases: [...] }.');
+    const entries = sourceEntries.filter(x => Number.isInteger(Number(x?.town_hall)) && Number(x.town_hall) >= 4 && Number(x.town_hall) <= 18 && validBaseLink(x?.link, Number(x.town_hall)));
+    if (!entries.length) throw new Error('Base catalog contains no structurally valid layouts.');
+    baseCatalogCache = { loadedAt: Date.now(), entries, source: 'community catalog: nschmeller/clash-bases' };
+    return entries;
+  } catch (catalogError) {
     try {
-      const r = await fetch(BASE_CATALOG_URL, { signal: controller.signal, headers: { Accept: 'application/json' } });
-      if (!r.ok) throw new Error(`Base catalog request failed (${r.status})`);
-      const raw = await r.json();
-      const sourceEntries = Array.isArray(raw) ? raw : (Array.isArray(raw?.bases) ? raw.bases : null);
-      if (!sourceEntries) throw new Error('Base catalog returned an invalid payload.');
-      const cutoff=Date.now()-120*24*60*60*1000;
-      const entries=sourceEntries.filter(x=>Number.isInteger(Number(x?.town_hall))&&Number(x.town_hall)>=4&&Number(x.town_hall)<=18&&validBaseLink(x?.link,Number(x.town_hall))&&Date.parse(String(x.added||''))>=cutoff);
-      if(!entries.length) throw new Error(`Current live base source unavailable (${liveError.message}) and no recent fallback layouts are available.`);
-      baseCatalogCache={loadedAt:Date.now(),entries,source:'Recent community JSON fallback'};
-      return entries;
-    } finally { clearTimeout(timer); }
-  }
+      const live = await loadLiveBaseCatalog();
+      if (!live.length) throw new Error('Current live base source returned no playable layouts.');
+      baseCatalogCache = { loadedAt: Date.now(), entries: live, source: 'ClashLayouts current feed' };
+      return live;
+    } catch (liveError) {
+      throw new Error(`Base catalog unavailable (${catalogError.message}; live fallback: ${liveError.message})`);
+    }
+  } finally { clearTimeout(timer); }
 }
 
 function baseTypesFor(entries, th) {
