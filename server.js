@@ -426,11 +426,39 @@ function pointInTheme(theme, x, y, n=22) {
 }
 function aWrap(x,y){ const a=Math.atan2(y,x); return (a+Math.PI)/(2*Math.PI)*8; }
 
+function creativeBlueprintFootprintValid(p, n) {
+  return Number.isInteger(p.x) && Number.isInteger(p.y) && Number.isInteger(p.w) && Number.isInteger(p.h)
+    && p.w > 0 && p.h > 0 && p.x >= 0 && p.y >= 0 && p.x + p.w <= n && p.y + p.h <= n;
+}
+
+function validateCreativeBlueprint(blueprint) {
+  const issues = [];
+  const n = blueprint.gridSize;
+  const occupied = new Map();
+  let townHalls = 0;
+  for (const p of blueprint.placements) {
+    if (!creativeBlueprintFootprintValid(p, n)) {
+      issues.push(`Out-of-bounds footprint: ${p.id}`);
+      continue;
+    }
+    if (p.id === 'town_hall') townHalls += 1;
+    for (let yy = p.y; yy < p.y + p.h; yy++) for (let xx = p.x; xx < p.x + p.w; xx++) {
+      const key = `${xx},${yy}`;
+      if (occupied.has(key)) issues.push(`Overlap at ${key}: ${occupied.get(key)} / ${p.id}`);
+      else occupied.set(key, p.id);
+    }
+  }
+  if (townHalls !== 1) issues.push(`Town Hall count must be exactly 1 (found ${townHalls}).`);
+  return { ok: issues.length === 0, level: 'structural', issues };
+}
+
 function buildCreativeBlueprint(th, purpose, prompt) {
   const theme = creativeThemeFromPrompt(prompt);
   const n=22, placements=[];
   const cx=Math.floor(n/2), cy=Math.floor(n/2);
   placements.push({id:'town_hall',x:cx-1,y:cy-1,w:2,h:2,category:'core'});
+  // These are blueprint tokens, not a claim that every token is a TH-specific inventory item.
+  // The later placement/export layer is responsible for mapping canonical game objects.
   const defenseIds=['inferno_tower','x_bow','air_defense','wizard_tower','archer_tower','cannon'];
   let di=0;
   for(let y=0;y<n;y++) for(let x=0;x<n;x++) {
@@ -443,7 +471,11 @@ function buildCreativeBlueprint(th, purpose, prompt) {
   }
   const occupied=new Set(); const valid=[];
   for(const p of placements){ const key=`${p.x},${p.y}`; if(!occupied.has(key)){occupied.add(key);valid.push(p);} }
-  return {townHall:th,purpose,theme,prompt,gridSize:n,placements:valid,validation:{ok:true,level:'structural',issues:[]},note:'Creative blueprint is a visual/structured concept. It is not an official OpenLayout export.'};
+  const blueprint={townHall:th,purpose,theme,prompt,gridSize:n,coordinateSystem:'blueprint-grid-v1',placements:valid};
+  blueprint.validation=validateCreativeBlueprint(blueprint);
+  blueprint.export={format:'jagathish-coc-blueprint-v1',openLayout:false,jsonBlueprint:true,verifiedOpenLayout:false};
+  blueprint.note='Structured creative blueprint only. It is not an official Clash of Clans OpenLayout export; no synthetic share URL is generated.';
+  return blueprint;
 }
 
 app.post('/api/coc/generate-base-blueprint', async (req,res)=>{
@@ -454,7 +486,7 @@ app.post('/api/coc/generate-base-blueprint', async (req,res)=>{
   const purpose=String(req.body?.basePurpose || 'Creative').trim();
   try {
     const candidates=Array.from({length:3},(_,i)=>buildCreativeBlueprint(th,purpose, i===0?prompt:`${prompt} variation ${i+1}`));
-    return res.json({townHall:th, generationMode:'creative-blueprint', candidates, selected:candidates[0], export:{openLayout:false,jsonBlueprint:true}, provider:'deterministic-creative-engine'});
+    return res.json({townHall:th, generationMode:'creative-blueprint', candidates, selected:candidates[0], export:{openLayout:false,jsonBlueprint:true,verifiedOpenLayout:false}, provider:'deterministic-creative-engine-v2'});
   } catch(e){ return res.status(500).json({error:e?.message || 'Creative blueprint generation failed.'}); }
 });
 
