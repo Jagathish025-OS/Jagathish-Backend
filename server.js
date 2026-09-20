@@ -1,1081 +1,245 @@
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
+const COC_GAME_DATA = require("./data/coc-game-data.json");
 
 const app = express();
-
 const PORT = process.env.PORT || 3000;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const CONFIGURED_OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
-// The free router can select different models per request. For strict JSON army
-// generation we prefer a known free model with JSON response support.
 const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   ? "google/gemma-4-26b-a4b-it:free"
   : CONFIGURED_OPENROUTER_MODEL;
-const COC_DATA_VERSION = "clash-armies-game-data@0.12.5 (2026-09-05)";
-const COC_DATA_SOURCE = "Uploaded Clash Armies structured game-data.json5";
-const BACKEND_BUILD = "V6 · 2026-09-20";
-const COC_GAME_DATA = require("./data/coc-game-data.json");
+const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
+const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
+const BACKEND_BUILD = "V7 · 2026-09-20";
 
-app.use(cors({
-  origin: true,
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"]
-}));
+app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
 
-const supabase =
-  process.env.SUPABASE_URL && process.env.SUPABASE_KEY
-    ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
-    : null;
+const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+  : null;
 
+console.log("BACKEND_BUILD =", BACKEND_BUILD);
+console.log("COC_DATA_SOURCE =", COC_DATA_SOURCE);
 console.log("SUPABASE_URL =", process.env.SUPABASE_URL);
 console.log("SUPABASE_KEY EXISTS =", !!process.env.SUPABASE_KEY);
 console.log("OPENROUTER_API_KEY EXISTS =", !!process.env.OPENROUTER_API_KEY);
 console.log("OPENROUTER_MODEL =", OPENROUTER_MODEL);
 
-/* -------------------- HOME -------------------- */
-
-app.get("/", (req, res) => {
-  res.json({
-    message: "Jagathish Backend Running",
-    cocAI: true,
-    dataVersion: COC_DATA_VERSION
-  });
-});
-
-/* -------------------- STATUS -------------------- */
-
-app.get("/api/status", (req, res) => {
-  res.json({
-    status: "online",
-    version: "1.1",
-    service: "Jagathish Backend",
-    backendBuild: BACKEND_BUILD,
-    cocAI: !!process.env.OPENROUTER_API_KEY,
-    cocData: COC_DATA_VERSION
-  });
-});
-
-/* -------------------- EXISTING SUPABASE ROUTES -------------------- */
+app.get("/", (_req, res) => res.json({ message: "Jagathish Backend Running", cocAI: true, dataVersion: COC_DATA_VERSION, build: BACKEND_BUILD }));
+app.get("/api/status", (_req, res) => res.json({ status: "online", version: "1.3.0", service: "Jagathish Backend", backendBuild: BACKEND_BUILD, cocAI: !!process.env.OPENROUTER_API_KEY, cocData: COC_DATA_VERSION }));
 
 function requireSupabase(res) {
-  if (!supabase) {
-    res.status(503).json({ error: "Supabase is not configured on this server." });
-    return false;
-  }
+  if (!supabase) { res.status(503).json({ error: "Supabase is not configured on this server." }); return false; }
   return true;
 }
+app.get("/api/files", async (_req,res)=>{ if(!requireSupabase(res))return; try{const {data,error}=await supabase.storage.from("files").list(); if(error)return res.status(500).json({error:error.message}); res.json(data);}catch(e){res.status(500).json({error:e.message});} });
+app.get("/api/files/:userid", async (req,res)=>{ if(!requireSupabase(res))return; try{const {data,error}=await supabase.storage.from("files").list(req.params.userid); if(error)return res.status(500).json({error:error.message}); res.json(data);}catch(e){res.status(500).json({error:e.message});} });
+app.post("/api/save-file", async (req,res)=>{ if(!requireSupabase(res))return; try{const {user_id,filename,size,storage_path}=req.body; const {data,error}=await supabase.from("files_metadata").insert([{user_id,filename,size,storage_path,synced:false}]).select(); if(error)return res.status(500).json({error:error.message}); res.json({success:true,data});}catch(e){res.status(500).json({error:e.message});} });
+app.get("/api/metadata/:userid", async (req,res)=>{ if(!requireSupabase(res))return; try{const {data,error}=await supabase.from("files_metadata").select("*").eq("user_id",req.params.userid); if(error)return res.status(500).json({error:error.message}); res.json(data);}catch(e){res.status(500).json({error:e.message});} });
+app.get("/api/pending-files", async (_req,res)=>{ if(!requireSupabase(res))return; try{const {data,error}=await supabase.from("files_metadata").select("*").eq("synced",false); if(error)return res.status(500).json({error:error.message}); res.json(data);}catch(e){res.status(500).json({error:e.message});} });
+app.post("/api/mark-synced/:id", async (req,res)=>{ if(!requireSupabase(res))return; try{const {local_path}=req.body; const {data,error}=await supabase.from("files_metadata").update({synced:true,local_path,synced_at:new Date().toISOString()}).eq("id",req.params.id).select(); if(error)return res.status(500).json({error:error.message}); res.json({success:true,data});}catch(e){res.status(500).json({error:e.message});} });
+app.get("/api/download-url/:id", async (req,res)=>{ if(!requireSupabase(res))return; try{const {data,error}=await supabase.from("files_metadata").select("*").eq("id",req.params.id).single(); if(error)return res.status(500).json({error:error.message}); const {data:urlData}=supabase.storage.from("files").getPublicUrl(data.storage_path); res.json({filename:data.filename,url:urlData.publicUrl});}catch(e){res.status(500).json({error:e.message});} });
 
-app.get("/api/files", async (req, res) => {
-  if (!requireSupabase(res)) return;
-  try {
-    const { data, error } = await supabase.storage.from("files").list();
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+function validTH(value){const th=Number(value);return Number.isInteger(th)&&th>=1&&th<=18?th:null;}
+function getTownHallRecord(th){return COC_GAME_DATA.townHalls.find(x=>Number(x.level)===th)||null;}
+function getUnitMaxLevel(unit, th, gameData, clanCastle=false, unitType=null){
+  unitType = unitType || (Array.isArray(gameData.troops) && gameData.troops.includes(unit) ? 'Troop' : Array.isArray(gameData.spells) && gameData.spells.includes(unit) ? 'Spell' : 'Siege');
+  const t=getTownHallRecord(th); if(!t||!unit) return -1;
+  if(clanCastle){
+    if(t.maxCc===null || t.maxCc===undefined) return -1;
+    if(unit.name==='Battle Drill' && Number(t.maxCc)<9) return -1;
+    let max=-1;
+    for(const levelData of unit.levels||[]){
+      if(typeof levelData.laboratoryLevel==='number' && levelData.laboratoryLevel>Number(t.ccLaboratoryCap??-1)) return max;
+      max=Number(levelData.level);
+    }
+    return max;
   }
+  let max=-1;
+  for(const levelData of unit.levels||[]){
+    if(unitType==='Troop'){
+      const prod=unit.productionBuilding;
+      const prodLevel=prod==='Barrack'?(t.maxBarracks??-1):prod==='Dark Elixir Barrack'?(t.maxDarkBarracks??-1):null;
+      if(prodLevel===null) return -1;
+      if(Number(levelData.buildingLevel??-1)>Number(prodLevel)) return max;
+    }
+    if(unitType==='Siege'){
+      if(Number(t.level)<12 || !t.maxWorkshop) return -1;
+      if(Number(levelData.buildingLevel??-1)>Number(t.maxWorkshop)) return max;
+    }
+    if(unitType==='Spell'){
+      if(Number(t.level)<5) return max;
+      const prod=unit.productionBuilding;
+      const prodLevel=prod==='Spell Factory'?(t.maxSpellFactory??-1):prod==='Dark Spell Factory'?(t.maxDarkSpellFactory??-1):null;
+      if(prodLevel===null) return -1;
+      if(Number(levelData.buildingLevel??-1)>Number(prodLevel)) return max;
+    }
+    const labLevel=t.maxLaboratory??-1;
+    if(Number(levelData.level)!==1 && Number(levelData.laboratoryLevel??-1)>Number(labLevel)) return max;
+    max=Number(levelData.level);
+  }
+  return max;
+}
+function getEquipmentMaxLevel(item,th){
+  const t=getTownHallRecord(th); if(!t||!item) return -1;
+  const hero=COC_GAME_DATA.heroes.find(h=>h.name===item.hero);
+  if(!hero || getHeroMaxLevel(item.hero,th)<1) return -1;
+  let max=-1; for(const l of item.levels||[]){ if(Number(l.blacksmithLevel??-1)>Number(t.maxBlacksmith??-1)) return max; max=Number(l.level); } return max;
+}
+function getPetMaxLevel(item,th){const t=getTownHallRecord(th); if(!t||!item||t.maxPetHouse===null||t.maxPetHouse===undefined)return -1; let max=-1; for(const l of item.levels||[]){if(Number(l.petHouseLevel??-1)>Number(t.maxPetHouse))return max;max=Number(l.level);}return max;}
+function getHeroMaxLevel(name,th){const t=getTownHallRecord(th); const row=(t?.heroMaxLevels||[]).find(x=>String(x.hero).toLowerCase()===String(name).toLowerCase()); return row?Number(row.maxLevel):-1;}
+
+function summarizeUnit(u,maxLevel,type,cc=false){return {name:u.name,type,housingSpace:Number(u.housingSpace||0),maxLevel,isSuper:Boolean(u.isSuper),isFlying:Boolean(u.isFlying),isJumper:Boolean(u.isJumper),airTargets:Boolean(u.airTargets),groundTargets:Boolean(u.groundTargets),productionBuilding:u.productionBuilding||null,clanCastleEligible:cc};}
+function availableUnits(th,type,cc=false){
+  const key = type==='Troop' ? 'troops' : type==='Spell' ? 'spells' : 'sieges';
+  const source = Array.isArray(COC_GAME_DATA[key]) ? COC_GAME_DATA[key] : [];
+  return source.filter(u=>!u.isSuper).map(u=>{const max=getUnitMaxLevel(u,th,COC_GAME_DATA,cc,type); return max<1?null:summarizeUnit(u,max,type.toLowerCase(),cc);}).filter(Boolean);
+}
+function availableTroops(th,cc=false){return availableUnits(th,'Troop',cc);}
+function availableSpells(th,cc=false){return availableUnits(th,'Spell',cc);}
+function availableSieges(th,cc=false){const t=getTownHallRecord(th); if(!t)return []; if(cc ? Number(t.ccSiegeCapacity||0)<1 : Number(t.siegeCapacity||0)<1)return []; return availableUnits(th,'Siege',cc);}
+function getHeroes(th){return COC_GAME_DATA.heroes.map(h=>{const max=getHeroMaxLevel(h.name,th);return max>0?{name:h.name,maxLevel:max}:null;}).filter(Boolean);}
+function getPets(th){return COC_GAME_DATA.pets.map(p=>{const max=getPetMaxLevel(p,th);return max>0?{name:p.name,maxLevel:max}:null;}).filter(Boolean);}
+function getEquipment(th){return COC_GAME_DATA.equipment.map(e=>{const max=getEquipmentMaxLevel(e,th);return max>0?{name:e.name,hero:e.hero,maxLevel:max}:null;}).filter(Boolean);}
+function getCocSnapshot(th){
+  const t=getTownHallRecord(th); if(!t)throw new Error(`No verified Town Hall ${th}`);
+  const troops=availableTroops(th), spells=availableSpells(th), sieges=availableSieges(th), ccTroops=availableTroops(th,true), ccSpells=availableSpells(th,true), ccSieges=availableSieges(th,true), heroes=getHeroes(th), pets=getPets(th), equipment=getEquipment(th);
+  return {townHall:th,dataVersion:COC_DATA_VERSION,dataSource:COC_DATA_SOURCE,army:{camps:Number(t.maxBarracks||0),totalCapacity:Number(t.troopCapacity||0),capacityPerCamp:t.maxBarracks?Number(t.troopCapacity||0)/Number(t.maxBarracks):0,ownSiegeCapacity:Number(t.siegeCapacity||0)},spellCapacity:Number(t.spellCapacity||0),clanCastle:{level:Number(t.maxCc||0),troopCapacity:Number(t.ccTroopCapacity||0),spellCapacity:Number(t.ccSpellCapacity||0),siegeMachineCapacity:Number(t.ccSiegeCapacity||0)},heroes,heroHallLevel:null,pets,petHouseLevel:Number(t.maxPetHouse||0),equipment,blacksmithLevel:Number(t.maxBlacksmith||0),troops,spells,siegeMachines:sieges,clanCastleTroops:ccTroops,clanCastleSpells:ccSpells,clanCastleSiegeMachines:ccSieges,counts:{availableTroops:troops.length,availableSpells:spells.length,availableOwnSiegeMachines:sieges.length,availableClanCastleSiegeMachines:ccSieges.length,availableClanCastleTroops:ccTroops.length,availableClanCastleSpells:ccSpells.length,availableHeroes:heroes.length,availablePets:pets.length,availableEquipment:equipment.length}};
+}
+
+app.get("/api/coc/game-data",(req,res)=>{const th=validTH(req.query.townHall);if(!th)return res.status(400).json({error:"townHall must be an integer from 1 to 18."});try{res.json(getCocSnapshot(th));}catch(e){console.error(e);res.status(500).json({error:"Unable to load Clash of Clans game data."});}});
+app.get("/api/coc/data-source",(_req,res)=>res.json({dataVersion:COC_DATA_VERSION,source:COC_DATA_SOURCE,townHalls:COC_GAME_DATA.townHalls.length,note:"ClashArmies source game-data.json5 and its unlock/validation rules were imported into this backend. This is community data, not the official Supercell API."}));
+
+function find(list,name){const n=String(name||'').trim().toLowerCase();return (list||[]).find(x=>String(x.name).toLowerCase()===n)||null;}
+function normalizeCountList(list){return Array.isArray(list)?list.map(x=>({name:String(x?.name||'').trim(),count:Math.max(0,Math.floor(Number(x?.count||0)))})).filter(x=>x.name&&x.count>0):[];}
+function addCount(list,name,count){if(count<=0)return;const row=list.find(x=>x.name===name);if(row)row.count+=count;else list.push({name,count});}
+function fillCapacity(candidates,capacity,weights={}){
+  const result=[]; let remaining=Number(capacity||0);
+  for(const c of candidates){if(remaining<=0)break;const space=Number(c.housingSpace||0);if(space<=0)continue;const desired=weights[c.name];let count=desired==null?Math.floor(remaining/space):Math.min(Number(desired),Math.floor(remaining/space));if(count>0){result.push({name:c.name,count});remaining-=count*space;}}
+  return result;
+}
+function totalSpace(list,verified){return normalizeCountList(list).reduce((s,x)=>s+x.count*Number(find(verified,x.name)?.housingSpace||0),0);}
+function trimToCapacity(list,verified,capacity){const out=[];let remaining=Number(capacity||0);for(const item of normalizeCountList(list)){const v=find(verified,item.name);if(!v)continue;const space=Number(v.housingSpace||0);if(!space)continue;const count=Math.min(item.count,Math.floor(remaining/space));if(count>0){out.push({name:v.name,count});remaining-=count*space;}}return out;}
+function chooseStrategy(th,data){
+  const names=new Set(data.troops.map(x=>x.name));
+  if(th>=14 && names.has('Root Rider')) return 'root-rider';
+  if(th>=13 && names.has('Electro Titan')) return 'electro-titan';
+  if(th>=11 && names.has('Electro Dragon')) return 'electro-dragon';
+  if(th>=10 && names.has('Miner')) return 'miner';
+  if(th>=9 && names.has('Hog Rider')) return 'hog';
+  if(th>=7 && names.has('Dragon')) return 'dragon';
+  if(th>=6 && names.has('Healer') && names.has('Giant')) return 'giant-healer';
+  if(th>=4 && names.has('Wizard') && names.has('Giant')) return 'giant-wizard';
+  if(names.has('Giant')) return 'giant';
+  if(names.has('Archer')) return 'archer';
+  return 'basic';
+}
+function chooseByNames(data,names){return names.map(n=>find(data,n)).filter(Boolean);}
+function buildStrategyArmy(th,data,strategy){
+  const troops=data.troops, spells=data.spells, ccTroops=data.clanCastleTroops, ccSpells=data.clanCastleSpells;
+  const by=(name)=>find(troops,name);
+  const available=(names)=>chooseByNames(troops,names);
+  let army=[];
+  const cap=data.army.totalCapacity;
+  const has=n=>!!by(n);
+  const use=(name,count)=>{const u=by(name);if(u)addCount(army,u.name,Math.max(0,Math.floor(count)));};
+
+  if(strategy==='dragon' && has('Dragon')){
+    const dragon=by('Dragon'); const balloon=by('Balloon'); const minion=by('Minion');
+    const d=Math.floor(cap/dragon.housingSpace*0.65); use('Dragon',d); if(balloon){const rem=cap-totalSpace(army,troops);use('Balloon',Math.floor(rem/balloon.housingSpace*0.65));} if(minion){const rem=cap-totalSpace(army,troops);use('Minion',Math.floor(rem/minion.housingSpace));}
+  } else if(strategy==='giant-healer' && has('Giant')){
+    const giant=by('Giant'); const healer=by('Healer'); const wizard=by('Wizard'); const wb=by('Wall Breaker');
+    use('Giant',Math.floor(cap*0.52/giant.housingSpace)); if(healer){const rem=cap-totalSpace(army,troops);use('Healer',Math.min(5,Math.floor(rem/healer.housingSpace)));} if(wb){const rem=cap-totalSpace(army,troops);use('Wall Breaker',Math.min(8,Math.floor(rem/wb.housingSpace)));} if(wizard){const rem=cap-totalSpace(army,troops);use('Wizard',Math.floor(rem/wizard.housingSpace));}
+  } else if(strategy==='hog' && has('Hog Rider')){
+    const hog=by('Hog Rider'); const wizard=by('Wizard'); const archer=by('Archer'); use('Hog Rider',Math.floor(cap*0.62/hog.housingSpace)); if(wizard){const rem=cap-totalSpace(army,troops);use('Wizard',Math.floor(rem*0.7/wizard.housingSpace));} if(archer){const rem=cap-totalSpace(army,troops);use('Archer',Math.floor(rem/archer.housingSpace));}
+  } else if(strategy==='miner' && has('Miner')){
+    const miner=by('Miner'); const healer=by('Healer'); const wizard=by('Wizard'); use('Miner',Math.floor(cap*0.7/miner.housingSpace)); if(healer){const rem=cap-totalSpace(army,troops);use('Healer',Math.min(5,Math.floor(rem/healer.housingSpace)));} if(wizard){const rem=cap-totalSpace(army,troops);use('Wizard',Math.floor(rem/wizard.housingSpace));}
+  } else if(strategy==='electro-dragon' && has('Electro Dragon')){
+    const ed=by('Electro Dragon'); const balloon=by('Balloon'); const minion=by('Minion'); use('Electro Dragon',Math.floor(cap*0.72/ed.housingSpace)); if(balloon){const rem=cap-totalSpace(army,troops);use('Balloon',Math.floor(rem*0.7/balloon.housingSpace));} if(minion){const rem=cap-totalSpace(army,troops);use('Minion',Math.floor(rem/minion.housingSpace));}
+  } else if(strategy==='electro-titan' && has('Electro Titan')){
+    const et=by('Electro Titan'); const healer=by('Healer'); const wizard=by('Wizard'); use('Electro Titan',Math.floor(cap*0.62/et.housingSpace)); if(healer){const rem=cap-totalSpace(army,troops);use('Healer',Math.min(5,Math.floor(rem/healer.housingSpace)));} if(wizard){const rem=cap-totalSpace(army,troops);use('Wizard',Math.floor(rem/wizard.housingSpace));}
+  } else if(strategy==='root-rider' && has('Root Rider')){
+    const rr=by('Root Rider'); const valk=by('Valkyrie'); const healer=by('Healer'); const wizard=by('Wizard'); use('Root Rider',Math.floor(cap*0.55/rr.housingSpace)); if(valk){const rem=cap-totalSpace(army,troops);use('Valkyrie',Math.floor(rem*0.55/valk.housingSpace));} if(healer){const rem=cap-totalSpace(army,troops);use('Healer',Math.min(5,Math.floor(rem/healer.housingSpace)));} if(wizard){const rem=cap-totalSpace(army,troops);use('Wizard',Math.floor(rem/wizard.housingSpace));}
+  } else if(strategy==='giant-wizard' && has('Giant')){
+    const giant=by('Giant'); const wizard=by('Wizard'); const wb=by('Wall Breaker'); const archer=by('Archer'); use('Giant',Math.floor(cap*0.48/giant.housingSpace)); if(wb){const rem=cap-totalSpace(army,troops);use('Wall Breaker',Math.min(8,Math.floor(rem/wb.housingSpace)));} if(wizard){const rem=cap-totalSpace(army,troops);use('Wizard',Math.floor(rem*0.75/wizard.housingSpace));} if(archer){const rem=cap-totalSpace(army,troops);use('Archer',Math.floor((cap-totalSpace(army,troops))/archer.housingSpace));}
+  } else if(strategy==='giant' && has('Giant')){
+    const giant=by('Giant'); const archer=by('Archer'); use('Giant',Math.floor(cap*0.55/giant.housingSpace)); if(archer){const rem=cap-totalSpace(army,troops);use('Archer',Math.floor(rem/archer.housingSpace));}
+  } else if(strategy==='archer' && has('Archer')){use('Archer',Math.floor(cap/by('Archer').housingSpace));}
+  else { const ordered=troops.slice(0,6); army=fillCapacity(ordered,cap); }
+
+  army=trimToCapacity(army,troops,cap);
+  // If rounding left space, fill with a cheap ranged troop rather than leaving a large gap.
+  const rem=cap-totalSpace(army,troops); const filler=troops.find(x=>x.name==='Archer')||troops.find(x=>x.housingSpace===1)||troops[0]; if(rem>0&&filler)addCount(army,filler.name,Math.floor(rem/filler.housingSpace));
+  army=trimToCapacity(army,troops,cap);
+
+  let spellPlan=[]; const spellCap=data.spellCapacity;
+  const addSpell=(name,count)=>{const s=find(spells,name);if(s)addCount(spellPlan,s.name,count);};
+  if(spellCap>0){
+    if(find(spells,'Rage')) addSpell('Rage',Math.min(2,Math.floor(spellCap/2)));
+    if(find(spells,'Freeze')){const rems=spellCap-totalSpace(spellPlan,spells);addSpell('Freeze',Math.min(2,Math.floor(rems/1)));}
+    if(find(spells,'Lightning') && totalSpace(spellPlan,spells)<spellCap){const rems=spellCap-totalSpace(spellPlan,spells);addSpell('Lightning',Math.floor(rems/find(spells,'Lightning').housingSpace));}
+    if(find(spells,'Heal') && totalSpace(spellPlan,spells)<spellCap){const rems=spellCap-totalSpace(spellPlan,spells);addSpell('Heal',Math.floor(rems/find(spells,'Heal').housingSpace));}
+  }
+  spellPlan=trimToCapacity(spellPlan,spells,spellCap);
+
+  // Recommended CC: use a high-impact troop that is actually donateable at this TH.
+  const cc=[]; let ccRemaining=data.clanCastle.troopCapacity;
+  const ccOrder=['Hog Rider','Balloon','Dragon','Wizard','Valkyrie','Giant','Archer','Barbarian'];
+  for(const name of ccOrder){const u=find(ccTroops,name);if(!u||ccRemaining<=0)continue;const c=Math.floor(ccRemaining/u.housingSpace);if(c>0){addCount(cc,u.name,c);ccRemaining-=c*u.housingSpace;break;}}
+  if(!cc.length && ccTroops.length){const u=ccTroops.find(x=>x.housingSpace>0);const c=Math.floor(ccRemaining/u.housingSpace);if(c>0)addCount(cc,u.name,c);}
+  const ccSpell=[]; let ccs=data.clanCastle.spellCapacity; for(const name of ['Rage','Heal','Freeze','Lightning','Invisibility']){const s=find(ccSpells,name);if(s&&ccs>=s.housingSpace){addCount(ccSpell,s.name,1);ccs-=s.housingSpace;break;}}
+  let siegeMachine=null; if(data.clanCastle.siegeMachineCapacity>0){const preferred=['Siege Barracks','Log Launcher','Wall Wrecker','Stone Slammer','Flame Flinger','Battle Drill']; siegeMachine=(preferred.map(n=>find(data.clanCastleSiegeMachines,n)).find(Boolean)||data.clanCastleSiegeMachines[0])?.name||null;}
+  const heroes=data.heroes.map(h=>h.name);
+  const pets=[]; for(const h of heroes){const pet=data.pets.find(p=>!pets.some(x=>x.pet===p.name)); if(pet)pets.push({hero:h,pet:pet.name});}
+  const equipment=[]; for(const h of heroes){const eq=data.equipment.filter(e=>e.hero===h).slice(0,2); for(const e of eq)equipment.push({hero:h,equipment:e.name});}
+  return {army:{troops:army,spells:spellPlan,siegeMachine,clanCastleTroops:cc,clanCastleSpells:ccSpell,heroes,pets,equipment},strategy,summary:`${strategy} strategy built from ClashArmies verified Town Hall ${th} rules.`,attackGuide:buildGuide(strategy)};
+}
+function buildGuide(strategy){const guides={
+  'dragon':['Funnel both sides with a few support troops.','Deploy Dragons in a line toward the core.','Use Balloons to target key defenses and support the Dragons.','Use spells to keep the main air push moving through the core.'],
+  'giant-healer':['Create a funnel on both sides.','Deploy Giants as the tank line.','Use Healers behind the Giants and Wall Breakers to open compartments.','Deploy Wizards behind the tank line for damage.'],
+  'giant-wizard':['Create a funnel first.','Send Giants toward the main defenses.','Use Wall Breakers to open the first compartments.','Deploy Wizards behind the Giants and use spells on the densest defenses.'],
+  'hog':['Create a funnel and remove key outer defenses.','Send Hog Riders toward defenses in a concentrated group.','Use Heal spells over high-damage areas.','Use the remaining support troops and heroes to clean up.'],
+  'miner':['Create a funnel so the Miner group enters the intended area.','Deploy Miners in a controlled line or group.','Use Healers/support behind the push when available.','Use spells around concentrated defenses and the core.'],
+  'electro-dragon':['Create a wide funnel.','Deploy Electro Dragons in a line so their chain attacks overlap.','Use Balloons to support the main push.','Use spells to help the air army reach the core.'],
+  'electro-titan':['Create a funnel and keep the main group together.','Deploy Electro Titans with support behind them.','Use Healers where available to sustain the push.','Use spells on high-value defensive zones.'],
+  'root-rider':['Create a funnel on both sides.','Send Root Riders into the main defensive line.','Use Valkyries and support troops behind the breach.','Use spells to sustain the ground push through the core.'],
+  'giant':['Use Giants as the front line.','Open the first compartment with Wall Breakers when available.','Deploy ranged support behind the Giants.','Use spells on dense defenses.'],
+  'archer':['Use small groups to clear exposed buildings.','Keep the army spread to reduce splash damage.','Use the hero and support units for the strongest defenses.','Clean up remaining buildings from the outside inward.'],
+  'basic':['Use the basic troop group as the main push.','Keep the army spread enough to reduce splash damage.','Use the available support units around the main group.','Clean up remaining buildings from the outside inward.']}; return (guides[strategy]||guides.archer).map((text,i)=>({phase:`Phase ${i+1}`,steps:[text]}));}
+function cleanAi(text){if(Array.isArray(text))text=text.map(x=>typeof x==='string'?x:(x&&x.text)||'').join('');if(typeof text!=='string')throw new Error('AI returned empty response');const t=text.trim();try{return JSON.parse(t);}catch{}const f=t.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);if(f)return JSON.parse(f[1]);const s=t.indexOf('{'),e=t.lastIndexOf('}');if(s>=0&&e>s)return JSON.parse(t.slice(s,e+1));throw new Error('AI returned invalid JSON');}
+function normalizeStrategy(s,data,th){const allowed=new Set(['dragon','giant-healer','giant-wizard','hog','miner','electro-dragon','electro-titan','root-rider','giant','archer']); const raw=String(s||'').toLowerCase().trim(); if(allowed.has(raw) && buildStrategyArmy(th,data,raw).army.troops.length)return raw; return chooseStrategy(th,data);}
+async function askAiForStrategy(th,data){
+  if(!process.env.OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is not configured.');
+  const candidates=data.troops.map(x=>x.name).join(', ');
+  const prompt=[`Town Hall ${th}. Choose one strategy name only from: dragon, giant-healer, giant-wizard, hog, miner, electro-dragon, electro-titan, root-rider, giant, archer.`,`Available verified troops: ${candidates}`,`Return JSON exactly like {"strategy":"dragon"}. Do not return an army. The server will build and validate the army.`].join('\n');
+  const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),25000);
+  try{const r=await fetch(OPENROUTER_URL,{method:'POST',headers:{Authorization:`Bearer ${process.env.OPENROUTER_API_KEY}`,"Content-Type":"application/json","HTTP-Referer":"https://jagathish.online","X-Title":"Jagathish CoC AI"},body:JSON.stringify({model:OPENROUTER_MODEL,temperature:0.1,max_tokens:120,reasoning:{effort:'none'},messages:[{role:'system',content:'You are a Clash of Clans strategy selector. Output JSON only.'},{role:'user',content:prompt}],response_format:{type:'json_object'}}),signal:controller.signal}); const raw=await r.text(); let j=null; try{j=JSON.parse(raw);}catch{} if(!r.ok)throw new Error(`AI provider request failed (${r.status})`); const out=cleanAi(j?.choices?.[0]?.message?.content); return {strategy:normalizeStrategy(out?.strategy,data,th),model:j?.model||OPENROUTER_MODEL};} finally{clearTimeout(timeout);}
+}
+
+app.post("/api/coc/generate-army",async(req,res)=>{
+  const th=validTH(req.body?.townHall); if(!th)return res.status(400).json({error:"townHall must be an integer from 1 to 18."});
+  try{
+    const data=getCocSnapshot(th); let strategy,model=OPENROUTER_MODEL,generationMode='ai-strategy'; let providerReason='';
+    try{const ai=await askAiForStrategy(th,data);strategy=ai.strategy;model=ai.model;}catch(e){providerReason=e?.message||'AI provider unavailable';strategy=chooseStrategy(th,data);generationMode='verified-server-strategy';console.warn('AI strategy unavailable; using deterministic strategy:',providerReason);}
+    const built=buildStrategyArmy(th,data,strategy);
+    const validation=validateFinalArmy(built.army,data);
+    if(!validation.ok)return res.status(500).json({error:'Server strategy builder failed validation.',validationErrors:validation.errors});
+    res.json({success:true,townHall:th,dataVersion:COC_DATA_VERSION,model,generationMode,repairApplied:false,strategy,army:built.army,attackGuide:built.attackGuide,summary:providerReason?`AI strategy provider was unavailable (${providerReason}). A deterministic ${strategy} army was generated from verified ClashArmies data.`:built.summary,totals:validation.totals});
+  }catch(e){console.error('CoC V7 generation error:',e);res.status(e?.name==='AbortError'?504:500).json({error:e?.name==='AbortError'?'AI provider timed out; a verified fallback should be used on the next request.':e.message||'Unable to generate army.'});}
 });
 
-app.get("/api/files/:userid", async (req, res) => {
-  if (!requireSupabase(res)) return;
-  try {
-    const { data, error } = await supabase.storage.from("files").list(req.params.userid);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/save-file", async (req, res) => {
-  if (!requireSupabase(res)) return;
-  try {
-    const { user_id, filename, size, storage_path } = req.body;
-    const { data, error } = await supabase
-      .from("files_metadata")
-      .insert([{ user_id, filename, size, storage_path, synced: false }])
-      .select();
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true, data });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/metadata/:userid", async (req, res) => {
-  if (!requireSupabase(res)) return;
-  try {
-    const { data, error } = await supabase
-      .from("files_metadata")
-      .select("*")
-      .eq("user_id", req.params.userid);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/pending-files", async (req, res) => {
-  if (!requireSupabase(res)) return;
-  try {
-    const { data, error } = await supabase
-      .from("files_metadata")
-      .select("*")
-      .eq("synced", false);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/mark-synced/:id", async (req, res) => {
-  if (!requireSupabase(res)) return;
-  try {
-    const { local_path } = req.body;
-    const { data, error } = await supabase
-      .from("files_metadata")
-      .update({
-        synced: true,
-        local_path,
-        synced_at: new Date().toISOString()
-      })
-      .eq("id", req.params.id)
-      .select();
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true, data });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/download-url/:id", async (req, res) => {
-  if (!requireSupabase(res)) return;
-  try {
-    const { data, error } = await supabase
-      .from("files_metadata")
-      .select("*")
-      .eq("id", req.params.id)
-      .single();
-
-    if (error) return res.status(500).json({ error: error.message });
-
-    const { data: urlData } = supabase.storage
-      .from("files")
-      .getPublicUrl(data.storage_path);
-
-    res.json({
-      filename: data.filename,
-      url: urlData.publicUrl
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* -------------------- COC VERIFIED DATA HELPERS -------------------- */
-
-function validTH(value) {
-  const th = Number(value);
-  return Number.isInteger(th) && th >= 1 && th <= 18 ? th : null;
+function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCountList(army.troops),spells=normalizeCountList(army.spells),ccTroops=normalizeCountList(army.clanCastleTroops),ccSpells=normalizeCountList(army.clanCastleSpells); const seen=new Set();
+  for(const list of [troops,spells,ccTroops,ccSpells])for(const x of list){const key=x.name.toLowerCase(); if(seen.has(`${list===troops?'t':list===spells?'s':list===ccTroops?'c':'cs'}:${key}`))errors.push(`Duplicate unit: ${x.name}`); seen.add(`${list===troops?'t':list===spells?'s':list===ccTroops?'c':'cs'}:${key}`);}
+  const ts=totalSpace(troops,data.troops), ss=totalSpace(spells,data.spells), cs=totalSpace(ccTroops,data.clanCastleTroops), css=totalSpace(ccSpells,data.clanCastleSpells); if(ts>data.army.totalCapacity)errors.push(`Troop capacity exceeded: ${ts}/${data.army.totalCapacity}`);if(ss>data.spellCapacity)errors.push(`Spell capacity exceeded: ${ss}/${data.spellCapacity}`);if(cs>data.clanCastle.troopCapacity)errors.push(`CC troop capacity exceeded: ${cs}/${data.clanCastle.troopCapacity}`);if(css>data.clanCastle.spellCapacity)errors.push(`CC spell capacity exceeded: ${css}/${data.clanCastle.spellCapacity}`);
+  for(const x of troops)if(!find(data.troops,x.name))errors.push(`Unavailable troop: ${x.name}`); for(const x of spells)if(!find(data.spells,x.name))errors.push(`Unavailable spell: ${x.name}`); for(const x of ccTroops)if(!find(data.clanCastleTroops,x.name))errors.push(`Unavailable CC troop: ${x.name}`); for(const x of ccSpells)if(!find(data.clanCastleSpells,x.name))errors.push(`Unavailable CC spell: ${x.name}`);
+  if(army.siegeMachine && !find(data.clanCastleSiegeMachines,army.siegeMachine))errors.push(`Unavailable CC siege machine: ${army.siegeMachine}`);
+  const heroes=Array.isArray(army.heroes)?army.heroes:[], heroSet=new Set(); for(const h of heroes){const v=find(data.heroes,h);if(!v)errors.push(`Unavailable hero: ${h}`);else{if(heroSet.has(v.name))errors.push(`Duplicate hero: ${h}`);heroSet.add(v.name);}}
+  const petHeroes=new Set(), pets=new Set(); for(const p of Array.isArray(army.pets)?army.pets:[]){const hero=find(data.heroes,p.hero),pet=find(data.pets,p.pet);if(!hero||!pet){errors.push(`Unavailable pet assignment: ${p.hero}/${p.pet}`);continue;}if(!heroSet.has(hero.name))errors.push(`Pet assigned to unselected hero: ${hero.name}`);if(petHeroes.has(hero.name))errors.push(`Hero has multiple pets: ${hero.name}`);if(pets.has(pet.name))errors.push(`Pet assigned twice: ${pet.name}`);petHeroes.add(hero.name);pets.add(pet.name);}
+  const eqSlots=new Map(); for(const e of Array.isArray(army.equipment)?army.equipment:[]){const hero=find(data.heroes,e.hero),item=find(data.equipment,e.equipment);if(!hero||!item||item.hero!==hero.name){errors.push(`Unavailable equipment assignment: ${e.hero}/${e.equipment}`);continue;}if(!heroSet.has(hero.name))errors.push(`Equipment assigned to unselected hero: ${hero.name}`);const n=(eqSlots.get(hero.name)||0)+1;if(n>2)errors.push(`More than two equipment items on ${hero.name}`);eqSlots.set(hero.name,n);}
+  return {ok:errors.length===0,errors,totals:{troopSpace:ts,troopCapacity:data.army.totalCapacity,spellSpace:ss,spellCapacity:data.spellCapacity,clanCastleTroopSpace:cs,clanCastleTroopCapacity:data.clanCastle.troopCapacity,clanCastleSpellSpace:css,clanCastleSpellCapacity:data.clanCastle.spellCapacity}};
 }
 
-function getTownHallRecord(th) {
-  return COC_GAME_DATA.townHalls.find(x => Number(x.level) === th) || null;
-}
-
-function maxEligibleLevel(entity, buildingLevel, laboratoryLevel) {
-  if (!entity || !Array.isArray(entity.levels)) return null;
-
-  const eligible = entity.levels.filter(level => {
-    const buildingOk =
-      buildingLevel == null ||
-      Number(level.buildingLevel ?? level.petHouseLevel ?? level.blacksmithLevel ?? 0) <= Number(buildingLevel);
-
-    const labRequired = level.laboratoryLevel;
-    const laboratoryOk =
-      laboratoryLevel == null ||
-      labRequired == null ||
-      Number(labRequired) <= Number(laboratoryLevel);
-
-    return buildingOk && laboratoryOk;
-  });
-
-  return eligible.length ? eligible[eligible.length - 1] : null;
-}
-
-function summarizeEntity(entity, th, type, buildingLevel, laboratoryLevel) {
-  const maxLevel = maxEligibleLevel(entity, buildingLevel, laboratoryLevel);
-  if (!maxLevel) return null;
-
-  return {
-    name: entity.name,
-    type,
-    housingSpace: Number(entity.housingSpace || 0),
-    maxLevel: Number(maxLevel.level || 0),
-    productionBuilding: entity.productionBuilding || null,
-    isSuper: Boolean(entity.isSuper),
-    isFlying: Boolean(entity.isFlying),
-    isJumper: Boolean(entity.isJumper),
-    airTargets: Boolean(entity.airTargets),
-    groundTargets: Boolean(entity.groundTargets)
-  };
-}
-
-function getAvailableTroops(th) {
-  const townHall = getTownHallRecord(th);
-  if (!townHall) return [];
-
-  return COC_GAME_DATA.troops
-    .filter(troop => !troop.isSuper)
-    .map(troop => {
-      const buildingLevel =
-        troop.productionBuilding === "Barrack"
-          ? townHall.maxBarracks
-          : townHall.maxDarkBarracks;
-
-      return summarizeEntity(
-        troop,
-        th,
-        "troop",
-        buildingLevel,
-        townHall.maxLaboratory
-      );
-    })
-    .filter(Boolean);
-}
-
-function getAvailableSpells(th) {
-  const townHall = getTownHallRecord(th);
-  if (!townHall) return [];
-
-  return COC_GAME_DATA.spells
-    .filter(spell => !spell.isSuper)
-    .map(spell => {
-      const buildingLevel =
-        spell.productionBuilding === "Spell Factory"
-          ? townHall.maxSpellFactory
-          : townHall.maxDarkSpellFactory;
-
-      return summarizeEntity(
-        spell,
-        th,
-        "spell",
-        buildingLevel,
-        townHall.maxLaboratory
-      );
-    })
-    .filter(Boolean);
-}
-
-function getAvailableOwnSiegeMachines(th) {
-  const townHall = getTownHallRecord(th);
-  if (!townHall || !townHall.maxWorkshop || townHall.siegeCapacity < 1) return [];
-
-  return COC_GAME_DATA.sieges
-    .filter(siege => !siege.isSuper)
-    .map(siege =>
-      summarizeEntity(
-        siege,
-        th,
-        "siege",
-        townHall.maxWorkshop,
-        townHall.maxLaboratory
-      )
-    )
-    .filter(Boolean);
-}
-
-function getHeroData(th) {
-  const townHall = getTownHallRecord(th);
-  const allowed = new Map(
-    (townHall?.heroMaxLevels || []).map(x => [String(x.hero).toLowerCase(), Number(x.maxLevel)])
-  );
-
-  return COC_GAME_DATA.heroes
-    .map(hero => {
-      const maxLevel = allowed.get(String(hero.name).toLowerCase());
-      if (!maxLevel) return null;
-      return {
-        name: hero.name,
-        maxLevel
-      };
-    })
-    .filter(Boolean);
-}
-
-function getAvailablePets(th) {
-  const townHall = getTownHallRecord(th);
-  const petHouseLevel = Number(townHall?.maxPetHouse || 0);
-  if (!petHouseLevel) return [];
-
-  return COC_GAME_DATA.pets.map(pet => {
-    const eligible = (pet.levels || []).filter(level =>
-      Number(level.petHouseLevel || 0) <= petHouseLevel
-    );
-    if (!eligible.length) return null;
-    return {
-      name: pet.name,
-      maxLevel: Number(eligible[eligible.length - 1].level || 0)
-    };
-  }).filter(Boolean);
-}
-
-function getAvailableEquipment(th) {
-  const townHall = getTownHallRecord(th);
-  const blacksmithLevel = Number(townHall?.maxBlacksmith || 0);
-  if (!blacksmithLevel) return [];
-
-  return COC_GAME_DATA.equipment.map(item => {
-    const eligible = (item.levels || []).filter(level => {
-      const required = level.blacksmithLevel;
-      return required == null || Number(required) <= blacksmithLevel;
-    });
-    if (!eligible.length) return null;
-    return {
-      name: item.name,
-      hero: item.hero || null,
-      maxLevel: Number(eligible[eligible.length - 1].level || 0)
-    };
-  }).filter(Boolean);
-}
-
-function getCocSnapshot(th) {
-  const townHall = getTownHallRecord(th);
-  if (!townHall) throw new Error(`No verified game-data record for Town Hall ${th}.`);
-
-  const troops = getAvailableTroops(th);
-  const spells = getAvailableSpells(th);
-  const siegeMachines = getAvailableOwnSiegeMachines(th);
-  // A Clan Castle siege machine is donated by another player, so the
-  // recipient does not need their own Siege Workshop.
-  const clanCastleSiegeMachines = Number(townHall.ccSiegeCapacity || 0) > 0
-    ? COC_GAME_DATA.sieges
-        .filter(siege => !siege.isSuper)
-        .map(siege => summarizeEntity(siege, th, "siege", null, townHall.maxLaboratory))
-        .filter(Boolean)
-    : [];
-  const heroes = getHeroData(th);
-  const pets = getAvailablePets(th);
-  const equipment = getAvailableEquipment(th);
-
-  return {
-    townHall: th,
-    dataVersion: COC_DATA_VERSION,
-    dataSource: COC_DATA_SOURCE,
-    army: {
-      camps: Number(townHall.maxBarracks || 0),
-      totalCapacity: Number(townHall.troopCapacity || 0),
-      capacityPerCamp: townHall.maxBarracks
-        ? Number(townHall.troopCapacity || 0) / Number(townHall.maxBarracks || 1)
-        : 0,
-      ownSiegeCapacity: Number(townHall.siegeCapacity || 0)
-    },
-    // This is the player's total spell-storage capacity.
-    // Do NOT add Spell Factory + Dark Spell Factory capacities together.
-    spellCapacity: Number(townHall.spellCapacity || 0),
-    clanCastle: {
-      level: Number(townHall.maxCc || 0),
-      troopCapacity: Number(townHall.ccTroopCapacity || 0),
-      spellCapacity: Number(townHall.ccSpellCapacity || 0),
-      siegeMachineCapacity: Number(townHall.ccSiegeCapacity || 0)
-    },
-    heroes,
-    heroHallLevel: null,
-    pets,
-    petHouseLevel: Number(townHall.maxPetHouse || 0),
-    equipment,
-    blacksmithLevel: Number(townHall.maxBlacksmith || 0),
-    troops,
-    spells,
-    siegeMachines,
-    clanCastleSiegeMachines,
-    counts: {
-      availableTroops: troops.length,
-      availableSpells: spells.length,
-      availableOwnSiegeMachines: siegeMachines.length,
-      availableClanCastleSiegeMachines: clanCastleSiegeMachines.length,
-      availableHeroes: heroes.length,
-      availablePets: pets.length,
-      availableEquipment: equipment.length
-    }
-  };
-}
-
-/* -------------------- COC GAME DATA -------------------- */
-
-app.get("/api/coc/game-data", (req, res) => {
-  const th = validTH(req.query.townHall);
-  if (!th) return res.status(400).json({ error: "townHall must be an integer from 1 to 18." });
-
-  try {
-    res.json(getCocSnapshot(th));
-  } catch (err) {
-    console.error("CoC data error:", err);
-    res.status(500).json({ error: "Unable to load Clash of Clans game data." });
-  }
-});
-
-app.get("/api/coc/data-source", (_req, res) => {
-  res.json({
-    dataVersion: COC_DATA_VERSION,
-    source: COC_DATA_SOURCE,
-    townHalls: COC_GAME_DATA.townHalls.length,
-    note: "Structured fan-maintained data supplied with this backend; not the official Supercell API."
-  });
-});
-
-/* -------------------- COC AI GENERATOR -------------------- */
-
-const armySchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    army: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        troops: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              name: { type: "string" },
-              count: { type: "integer", minimum: 1, maximum: 100 }
-            },
-            required: ["name", "count"]
-          }
-        },
-        spells: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              name: { type: "string" },
-              count: { type: "integer", minimum: 1, maximum: 20 }
-            },
-            required: ["name", "count"]
-          }
-        },
-        siegeMachine: { anyOf: [{ type: "string" }, { type: "null" }] },
-        clanCastleTroops: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              name: { type: "string" },
-              count: { type: "integer", minimum: 1, maximum: 50 }
-            },
-            required: ["name", "count"]
-          }
-        },
-        clanCastleSpells: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              name: { type: "string" },
-              count: { type: "integer", minimum: 1, maximum: 5 }
-            },
-            required: ["name", "count"]
-          }
-        },
-        heroes: {
-          type: "array",
-          items: { type: "string" }
-        },
-        pets: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              hero: { type: "string" },
-              pet: { type: "string" }
-            },
-            required: ["hero", "pet"]
-          }
-        },
-        equipment: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              hero: { type: "string" },
-              equipment: { type: "string" }
-            },
-            required: ["hero", "equipment"]
-          }
-        }
-      },
-      required: ["troops", "spells", "siegeMachine", "clanCastleTroops", "clanCastleSpells", "heroes", "pets", "equipment"]
-    },
-    attackGuide: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          phase: { type: "string" },
-          steps: {
-            type: "array",
-            items: { type: "string" }
-          }
-        },
-        required: ["phase", "steps"]
-      }
-    },
-    summary: { type: "string" }
-  },
-  required: ["army", "attackGuide", "summary"]
-};
-
-function cleanJsonText(text) {
-  if (Array.isArray(text)) {
-    text = text
-      .map(part => {
-        if (typeof part === "string") return part;
-        if (part && typeof part.text === "string") return part.text;
-        return "";
-      })
-      .join("");
-  }
-  if (typeof text !== "string" || !text.trim()) {
-    throw new Error("AI returned an empty response.");
-  }
-  const trimmed = text.trim();
-  try { return JSON.parse(trimmed); } catch (_) {}
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced) return JSON.parse(fenced[1]);
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
-  throw new Error("AI returned invalid JSON.");
-}
-
-function normalizeList(list) {
-  return Array.isArray(list) ? list.map(x => ({
-    name: String(x.name || "").trim(),
-    count: Number(x.count || 0)
-  })).filter(x => x.name && Number.isInteger(x.count) && x.count > 0) : [];
-}
-
-function findByName(list, name) {
-  const needle = String(name || "").trim().toLowerCase();
-  return list.find(x => x.name.toLowerCase() === needle);
-}
-
-function validateArmy(output, data) {
-  const errors = [];
-  const army = output?.army || {};
-
-  const troops = normalizeList(army.troops);
-  const spells = normalizeList(army.spells);
-  const ccTroops = normalizeList(army.clanCastleTroops);
-  const ccSpells = normalizeList(army.clanCastleSpells);
-
-  let troopSpace = 0;
-  for (const item of troops) {
-    const verified = findByName(data.troops, item.name);
-    if (!verified) errors.push(`Unknown or locked troop: ${item.name}`);
-    else troopSpace += item.count * Number(verified.housingSpace || 0);
-  }
-
-  let spellSpace = 0;
-  for (const item of spells) {
-    const verified = findByName(data.spells, item.name);
-    if (!verified) errors.push(`Unknown or locked spell: ${item.name}`);
-    else spellSpace += item.count * Number(verified.housingSpace || 0);
-  }
-
-  let ccTroopSpace = 0;
-  for (const item of ccTroops) {
-    const verified = findByName(data.troops, item.name);
-    if (!verified) errors.push(`Unknown Clan Castle troop: ${item.name}`);
-    else ccTroopSpace += item.count * Number(verified.housingSpace || 0);
-  }
-
-  let ccSpellSpace = 0;
-  for (const item of ccSpells) {
-    const verified = findByName(data.spells, item.name);
-    if (!verified) errors.push(`Unknown Clan Castle spell: ${item.name}`);
-    else ccSpellSpace += item.count * Number(verified.housingSpace || 0);
-  }
-
-  if (troopSpace > data.army.totalCapacity) {
-    errors.push(`Troop capacity exceeded: ${troopSpace}/${data.army.totalCapacity}`);
-  }
-  if (spellSpace > data.spellCapacity) {
-    errors.push(`Spell capacity exceeded: ${spellSpace}/${data.spellCapacity}`);
-  }
-  if (ccTroopSpace > data.clanCastle.troopCapacity) {
-    errors.push(`Clan Castle troop capacity exceeded: ${ccTroopSpace}/${data.clanCastle.troopCapacity}`);
-  }
-  if (ccSpellSpace > data.clanCastle.spellCapacity) {
-    errors.push(`Clan Castle spell capacity exceeded: ${ccSpellSpace}/${data.clanCastle.spellCapacity}`);
-  }
-
-  if (army.siegeMachine) {
-    const siege = findByName(
-      data.clanCastleSiegeMachines || data.siegeMachines,
-      army.siegeMachine
-    );
-    if (!siege) errors.push(`Unknown or unavailable siege machine: ${army.siegeMachine}`);
-    if (data.clanCastle.siegeMachineCapacity < 1) {
-      errors.push("Clan Castle does not have siege machine capacity at this Town Hall.");
-    }
-  }
-
-  const heroNames = Array.isArray(army.heroes) ? army.heroes.map(String) : [];
-  const validHeroes = [];
-  const seenHeroes = new Set();
-  for (const name of heroNames) {
-    const hero = findByName(data.heroes, name);
-    if (!hero) {
-      errors.push(`Unknown or locked hero: ${name}`);
-    } else {
-      if (seenHeroes.has(hero.id)) errors.push(`Duplicate hero: ${hero.name}`);
-      seenHeroes.add(hero.id);
-      validHeroes.push(hero.name);
-    }
-  }
-
-  const seenPetHeroes = new Set();
-  const seenPets = new Set();
-  const pets = Array.isArray(army.pets) ? army.pets : [];
-  for (const pair of pets) {
-    const pet = findByName(data.pets, pair.pet);
-    const hero = findByName(data.heroes, pair.hero);
-    if (!pet) errors.push(`Unknown or locked pet: ${pair.pet}`);
-    if (!hero) errors.push(`Invalid hero for pet: ${pair.hero}`);
-    const key = `${String(pair.hero).toLowerCase()}|${String(pair.pet).toLowerCase()}`;
-    if (seenPets.has(key)) errors.push(`Duplicate pet assignment: ${pair.hero}/${pair.pet}`);
-    if (seenPetHeroes.has(String(pair.hero).toLowerCase())) errors.push(`A hero has more than one pet assignment: ${pair.hero}`);
-    if (hero && !seenHeroes.has(hero.id)) errors.push(`Pet assigned to a hero not selected: ${pair.hero}`);
-    seenPets.add(key);
-    seenPetHeroes.add(String(pair.hero).toLowerCase());
-  }
-
-  const equipment = Array.isArray(army.equipment) ? army.equipment : [];
-  const equipmentSlotsByHero = new Map();
-  for (const pair of equipment) {
-    const item = findByName(data.equipment, pair.equipment);
-    const hero = findByName(data.heroes, pair.hero);
-    if (!item) errors.push(`Unknown or locked equipment: ${pair.equipment}`);
-    if (!hero) errors.push(`Invalid hero for equipment: ${pair.hero}`);
-    if (hero && !seenHeroes.has(hero.id)) errors.push(`Equipment assigned to a hero not selected: ${pair.hero}`);
-    if (item && item.hero && hero && String(item.hero).toLowerCase() !== hero.name.toLowerCase()) {
-      errors.push(`Equipment ${item.name} does not belong to ${hero.name}`);
-    }
-    if (hero) {
-      const key = hero.id;
-      const count = (equipmentSlotsByHero.get(key) || 0) + 1;
-      equipmentSlotsByHero.set(key, count);
-      if (count > 2) errors.push(`More than two equipment items assigned to ${hero.name}`);
-    }
-  }
-
-  return {
-    ok: errors.length === 0,
-    errors,
-    normalized: {
-      ...army,
-      troops,
-      spells,
-      clanCastleTroops: ccTroops,
-      clanCastleSpells: ccSpells,
-      heroes: validHeroes,
-      pets,
-      equipment
-    },
-    totals: {
-      troopSpace,
-      troopCapacity: data.army.totalCapacity,
-      spellSpace,
-      spellCapacity: data.spellCapacity,
-      clanCastleTroopSpace: ccTroopSpace,
-      clanCastleTroopCapacity: data.clanCastle.troopCapacity,
-      clanCastleSpellSpace: ccSpellSpace,
-      clanCastleSpellCapacity: data.clanCastle.spellCapacity
-    }
-  };
-}
-
-function buildAiData(data) {
-  return {
-    townHall: data.townHall,
-    capacities: {
-      troop: data.army.totalCapacity,
-      spell: data.spellCapacity,
-      clanCastleTroop: data.clanCastle.troopCapacity,
-      clanCastleSpell: data.clanCastle.spellCapacity,
-      clanCastleSiege: data.clanCastle.siegeMachineCapacity
-    },
-    troops: data.troops.map(x => ({ name: x.name, housingSpace: x.housingSpace })),
-    spells: data.spells.map(x => ({ name: x.name, housingSpace: x.housingSpace })),
-    ownSiegeMachines: (data.siegeMachines || []).map(x => x.name),
-    clanCastleSiegeMachines: (data.clanCastleSiegeMachines || []).map(x => x.name),
-    heroes: data.heroes.map(x => x.name),
-    pets: data.pets.map(x => x.name),
-    equipment: data.equipment.map(x => ({ name: x.name, hero: x.hero }))
-  };
-}
-
-function buildPrompt(data, preferences) {
-  const pref = preferences && typeof preferences === "object" ? preferences : {};
-  return [
-    "You are the Clash of Clans army planner for a fan website.",
-    "The VERIFIED GAME DATA below is the only source of truth for legality. Do not invent units, capacities, unlocks, levels, or names.",
-    "Choose a coherent attack army for the requested Town Hall. The user selected only the Town Hall; make the strategic choices yourself.",
-    "Use as much troop and spell capacity as practical, but never exceed it.",
-    "Use only one siege machine, and only if the Clan Castle has siege-machine capacity.",
-    "Clan Castle troops and spells are optional; if used, stay within their verified capacities.",
-    "Heroes must come only from the verified hero list. Pets and equipment must use verified names.",
-    "Return JSON matching the supplied schema. Do not include markdown.",
-    `Town Hall: ${data.townHall}`,
-    `User preferences: ${JSON.stringify(pref)}`,
-    "VERIFIED GAME DATA:",
-    JSON.stringify(buildAiData(data))
-  ].join("\n\n");
-}
-
-
-function fitCountList(list, verifiedList, capacity) {
-  const merged = new Map();
-  for (const item of normalizeList(list)) {
-    const verified = findByName(verifiedList, item.name);
-    if (!verified) continue;
-    const key = verified.name.toLowerCase();
-    merged.set(key, {
-      name: verified.name,
-      count: (merged.get(key)?.count || 0) + item.count,
-      housingSpace: Number(verified.housingSpace || 0)
-    });
-  }
-
-  const result = [...merged.values()].map(({ name, count }) => ({ name, count }));
-  let total = result.reduce((sum, item) => {
-    const verified = findByName(verifiedList, item.name);
-    return sum + item.count * Number(verified?.housingSpace || 0);
-  }, 0);
-
-  // Trim from the end until the list fits the verified capacity.
-  for (let i = result.length - 1; i >= 0 && total > capacity; i--) {
-    const verified = findByName(verifiedList, result[i].name);
-    const space = Number(verified?.housingSpace || 0);
-    if (!space) continue;
-    const removable = Math.min(result[i].count, Math.ceil((total - capacity) / space));
-    result[i].count -= removable;
-    total -= removable * space;
-  }
-
-  return result.filter(item => item.count > 0);
-}
-
-function fallbackTroops(data) {
-  const preferred = [
-    "Barbarian", "Archer", "Giant", "Wizard", "Balloon",
-    "Hog Rider", "Valkyrie", "Minion", "Dragon", "P.E.K.K.A"
-  ];
-  const ordered = [
-    ...preferred.map(name => findByName(data.troops, name)).filter(Boolean),
-    ...data.troops
-  ];
-  const chosen = [];
-  let remaining = Number(data.army.totalCapacity || 0);
-
-  for (const troop of ordered) {
-    if (!remaining) break;
-    const space = Number(troop.housingSpace || 0);
-    if (!space) continue;
-    const count = Math.floor(remaining / space);
-    if (count > 0) {
-      chosen.push({ name: troop.name, count });
-      remaining -= count * space;
-    }
-  }
-
-  return chosen;
-}
-
-function repairArmyCandidate(output, data) {
-  const source = output?.army || {};
-
-  const troops = fitCountList(source.troops, data.troops, data.army.totalCapacity);
-  const spells = fitCountList(source.spells, data.spells, data.spellCapacity);
-  const clanCastleTroops = fitCountList(
-    source.clanCastleTroops,
-    data.troops,
-    data.clanCastle.troopCapacity
-  );
-  const clanCastleSpells = fitCountList(
-    source.clanCastleSpells,
-    data.spells,
-    data.clanCastle.spellCapacity
-  );
-
-  const heroes = [];
-  const seenHeroes = new Set();
-  for (const raw of Array.isArray(source.heroes) ? source.heroes : []) {
-    const hero = findByName(data.heroes, raw);
-    if (!hero || seenHeroes.has(hero.id)) continue;
-    seenHeroes.add(hero.id);
-    heroes.push(hero.name);
-  }
-
-  const pets = [];
-  const petHeroes = new Set();
-  const seenPetPairs = new Set();
-  for (const pair of Array.isArray(source.pets) ? source.pets : []) {
-    const pet = findByName(data.pets, pair?.pet);
-    const hero = findByName(data.heroes, pair?.hero);
-    if (!pet || !hero || !seenHeroes.has(hero.id)) continue;
-    const pairKey = `${hero.id}|${pet.name.toLowerCase()}`;
-    if (seenPetPairs.has(pairKey) || petHeroes.has(hero.id)) continue;
-    seenPetPairs.add(pairKey);
-    petHeroes.add(hero.id);
-    pets.push({ hero: hero.name, pet: pet.name });
-  }
-
-  const equipment = [];
-  const equipmentSlots = new Map();
-  for (const pair of Array.isArray(source.equipment) ? source.equipment : []) {
-    const item = findByName(data.equipment, pair?.equipment);
-    const hero = findByName(data.heroes, pair?.hero);
-    if (!item || !hero || !seenHeroes.has(hero.id)) continue;
-    if (item.hero && String(item.hero).toLowerCase() !== hero.name.toLowerCase()) continue;
-    const count = equipmentSlots.get(hero.id) || 0;
-    if (count >= 2) continue;
-    equipmentSlots.set(hero.id, count + 1);
-    equipment.push({ hero: hero.name, equipment: item.name });
-  }
-
-  let siegeMachine = null;
-  if (source.siegeMachine) {
-    const siege = findByName(
-      data.clanCastleSiegeMachines || data.siegeMachines,
-      source.siegeMachine
-    );
-    if (siege && Number(data.clanCastle.siegeMachineCapacity || 0) > 0) {
-      siegeMachine = siege.name;
-    }
-  }
-
-  const repaired = {
-    troops: troops.length ? troops : fallbackTroops(data),
-    spells,
-    siegeMachine,
-    clanCastleTroops,
-    clanCastleSpells,
-    heroes,
-    pets,
-    equipment
-  };
-
-  return {
-    army: repaired,
-    attackGuide: Array.isArray(output?.attackGuide) ? output.attackGuide : [],
-    summary: typeof output?.summary === "string" && output.summary.trim()
-      ? output.summary
-      : "Army generated from verified Town Hall data."
-  };
-}
-
-
-function buildServerFallback(data, townHall, reason) {
-  const repaired = repairArmyCandidate({}, data);
-  const validation = validateArmy(repaired, data);
-
-  if (!validation.ok) {
-    throw new Error(
-      `Server fallback could not construct a valid army: ${validation.errors.join(" ")}`
-    );
-  }
-
-  return {
-    success: true,
-    townHall,
-    dataVersion: COC_DATA_VERSION,
-    model: "server-fallback",
-    generationMode: "verified-server-fallback",
-    repairApplied: true,
-    army: validation.normalized,
-    attackGuide: [
-      "This army was constructed from the verified Town Hall data because the AI provider was unavailable.",
-      "Use the listed troops and spells within the displayed capacity limits."
-    ],
-    summary: reason
-      ? `AI provider was unavailable (${reason}). A verified server fallback army was generated instead.`
-      : "A verified server fallback army was generated.",
-    totals: validation.totals
-  };
-}
-
-app.post("/api/coc/generate-army", async (req, res) => {
-  if (!process.env.OPENROUTER_API_KEY) {
-    return res.status(503).json({ error: "OPENROUTER_API_KEY is not configured on the backend." });
-  }
-
-  const th = validTH(req.body?.townHall);
-  if (!th) return res.status(400).json({ error: "townHall must be an integer from 1 to 18." });
-
-  try {
-    const data = getCocSnapshot(th);
-    const messages = [
-      {
-        role: "system",
-        content: "Return one valid JSON object only. Use only the verified game data. Never invent a unit, hero, pet, equipment, or capacity."
-      },
-      {
-        role: "user",
-        content: buildPrompt(data, req.body?.preferences)
-      }
-    ];
-
-    async function callOpenRouter(body, label) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 45000);
-      try {
-        const response = await fetch(OPENROUTER_URL, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://jagathish.online",
-            "X-Title": "Jagathish CoC AI"
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal
-        });
-
-        const raw = await response.text();
-        let parsed;
-        try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
-
-        const message = parsed?.choices?.[0]?.message;
-        const content = message?.content;
-        console.log(
-          `OpenRouter ${label}: status=${response.status}, model=${parsed?.model || "unknown"}, ` +
-          `finish=${parsed?.choices?.[0]?.finish_reason || "unknown"}, ` +
-          `contentLength=${typeof content === "string" ? content.length : Array.isArray(content) ? content.length : 0}`
-        );
-
-        if (!response.ok) {
-          console.error("OpenRouter error:", response.status, raw.slice(0, 1600));
-          throw new Error(`AI provider request failed (${response.status}).`);
-        }
-
-        return parsed;
-      } finally {
-        clearTimeout(timeout);
-      }
-    }
-
-    const requestBody = {
-      model: OPENROUTER_MODEL,
-      temperature: 0.2,
-      max_tokens: 5000,
-      reasoning: { effort: "none" },
-      messages,
-      response_format: { type: "json_object" }
-    };
-
-    let parsed = null;
-    let aiOutput = null;
-    let providerFallbackReason = "";
-
-    try {
-      parsed = await callOpenRouter(requestBody, "json-object");
-      let content = parsed?.choices?.[0]?.message?.content;
-
-      try {
-        aiOutput = cleanJsonText(content);
-      } catch (firstParseError) {
-        console.warn("First AI JSON parse failed; retrying with explicit JSON-only instruction.");
-        const retryBody = {
-          model: OPENROUTER_MODEL,
-          temperature: 0.1,
-          max_tokens: 6000,
-          reasoning: { effort: "none" },
-          messages: [
-            ...messages,
-            {
-              role: "user",
-              content: "Output the complete JSON object now. No markdown. No comments. Ensure every array and object is closed and the JSON parses."
-            }
-          ],
-          response_format: { type: "json_object" }
-        };
-
-        try {
-          parsed = await callOpenRouter(retryBody, "json-retry");
-          content = parsed?.choices?.[0]?.message?.content;
-          aiOutput = cleanJsonText(content);
-        } catch (retryError) {
-          providerFallbackReason = retryError?.message || "invalid AI JSON response";
-          console.warn("AI JSON retry failed; using verified server fallback.");
-          aiOutput = null;
-        }
-      }
-    } catch (providerError) {
-      providerFallbackReason = providerError?.message || "AI provider unavailable";
-      console.warn("AI provider unavailable; using verified server fallback:", providerFallbackReason);
-      aiOutput = null;
-    }
-
-    // AI is responsible for strategy; the server is responsible for legality.
-    // Repairing a candidate avoids rejecting otherwise useful strategy because
-    // a free model duplicated a hero or overshot a capacity.
-    const repaired = repairArmyCandidate(aiOutput || {}, data);
-    const validation = validateArmy(repaired, data);
-
-    if (!validation.ok) {
-      console.error("Repair could not produce a valid army:", validation.errors);
-      return res.status(500).json({
-        error: "The server could not construct a valid army from the verified Town Hall data.",
-        validationErrors: validation.errors
-      });
-    }
-
-    const repairedChanged = JSON.stringify(repaired.army) !== JSON.stringify(aiOutput?.army || {});
-
-    res.json({
-      success: true,
-      townHall: th,
-      dataVersion: COC_DATA_VERSION,
-      model: parsed?.model || OPENROUTER_MODEL,
-      generationMode: providerFallbackReason ? "verified-server-fallback" : "ai-normalized",
-      repairApplied: repairedChanged || !!providerFallbackReason,
-      army: validation.normalized,
-      attackGuide: repaired.attackGuide,
-      summary: providerFallbackReason
-        ? `AI provider was unavailable (${providerFallbackReason}). A verified server fallback army was generated instead.`
-        : (repairedChanged
-          ? `${repaired.summary} Server normalization was applied to keep every item within verified Town Hall limits.`
-          : repaired.summary),
-      totals: validation.totals
-    });
-  } catch (err) {
-    console.error("CoC AI generation error:", err);
-    const isTimeout = err?.name === "AbortError";
-    res.status(isTimeout ? 504 : 502).json({
-      error: isTimeout
-        ? "AI provider timed out. Please try Generate Army again."
-        : (err.message || "Unable to generate army.")
-    });
-  }
-});
-
-/* -------------------- START SERVER -------------------- */
-
-app.listen(PORT, () => {
-  console.log(`Server Running On Port ${PORT}`);
-});
+app.listen(PORT,()=>console.log(`Server Running On Port ${PORT}`));
