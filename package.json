@@ -1,7 +1,7 @@
 {
   "name": "backend",
-  "version": "1.0.0",
-  "description": "Jagathish Backend - Supabase + Clash of Clans AI API",
+  "version": "1.2.0",
+  "description": "Jagathish Backend - Supabase + Clash of Clans AI API with verified structured CoC game data",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

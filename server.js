@@ -1,14 +1,15 @@
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
-const { home } = require("clash-of-clans-data");
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
-const COC_DATA_VERSION = "clash-of-clans-data@0.16.0";
+const COC_DATA_VERSION = "clash-armies-game-data@0.12.5 (2026-09-05)";
+const COC_DATA_SOURCE = "Uploaded Clash Armies structured game-data.json5";
+const COC_GAME_DATA = require("./data/coc-game-data.json");
 
 app.use(cors({
   origin: true,
@@ -168,192 +169,222 @@ app.get("/api/download-url/:id", async (req, res) => {
   }
 });
 
-/* -------------------- COC DATA HELPERS -------------------- */
+/* -------------------- COC VERIFIED DATA HELPERS -------------------- */
 
 function validTH(value) {
   const th = Number(value);
   return Number.isInteger(th) && th >= 1 && th <= 18 ? th : null;
 }
 
-function maxLevelForTH(entity, th, requirementKeys = ["townHallRequired"]) {
+function getTownHallRecord(th) {
+  return COC_GAME_DATA.townHalls.find(x => Number(x.level) === th) || null;
+}
+
+function maxEligibleLevel(entity, buildingLevel, laboratoryLevel) {
   if (!entity || !Array.isArray(entity.levels)) return null;
 
   const eligible = entity.levels.filter(level => {
-    const key = requirementKeys.find(k => Number.isFinite(Number(level[k])));
-    if (!key) return true;
-    return Number(level[key]) <= th;
+    const buildingOk =
+      buildingLevel == null ||
+      Number(level.buildingLevel ?? level.petHouseLevel ?? level.blacksmithLevel ?? 0) <= Number(buildingLevel);
+
+    const labRequired = level.laboratoryLevel;
+    const laboratoryOk =
+      laboratoryLevel == null ||
+      labRequired == null ||
+      Number(labRequired) <= Number(laboratoryLevel);
+
+    return buildingOk && laboratoryOk;
   });
 
   return eligible.length ? eligible[eligible.length - 1] : null;
 }
 
-function summarizeEntity(entity, th, type) {
-  const maxLevel = maxLevelForTH(entity, th);
+function summarizeEntity(entity, th, type, buildingLevel, laboratoryLevel) {
+  const maxLevel = maxEligibleLevel(entity, buildingLevel, laboratoryLevel);
   if (!maxLevel) return null;
 
   return {
-    id: entity.id,
     name: entity.name,
     type,
     housingSpace: Number(entity.housingSpace || 0),
-    targetType: entity.targetType || null,
-    troopType: entity.troopType || null,
-    spellType: entity.spellType || null,
-    maxLevel: maxLevel.level,
-    townHallRequired: Number(maxLevel.townHallRequired || 0),
-    image: entity.images?.icon || null
+    maxLevel: Number(maxLevel.level || 0),
+    productionBuilding: entity.productionBuilding || null,
+    isSuper: Boolean(entity.isSuper),
+    isFlying: Boolean(entity.isFlying),
+    isJumper: Boolean(entity.isJumper),
+    airTargets: Boolean(entity.airTargets),
+    groundTargets: Boolean(entity.groundTargets)
   };
 }
 
-function getArmyCampCapacity(th) {
-  const camp = home().armyBuildings().armyCamp().first();
-  const campLevel = maxLevelForTH(camp, th);
-  const count = (camp?.availablePerTownHall || [])
-    .find(x => Number(x.townHallLevel) === th)?.count || 0;
-  return {
-    camps: Number(count),
-    capacityPerCamp: Number(campLevel?.housingSpace || 0),
-    totalCapacity: Number(count) * Number(campLevel?.housingSpace || 0)
-  };
-}
+function getAvailableTroops(th) {
+  const townHall = getTownHallRecord(th);
+  if (!townHall) return [];
 
-function getBuildingCapacity(th, building, field) {
-  const entity = home().armyBuildings()[building]?.() || null;
-  if (!entity) return 0;
-  const level = maxLevelForTH(entity, th);
-  return Number(level?.[field] || 0);
-}
+  return COC_GAME_DATA.troops
+    .filter(troop => !troop.isSuper)
+    .map(troop => {
+      const buildingLevel =
+        troop.productionBuilding === "Barrack"
+          ? townHall.maxBarracks
+          : townHall.maxDarkBarracks;
 
-function getClanCastle(th) {
-  const cc = home().resourceBuildings().clanCastle().first();
-  const level = maxLevelForTH(cc, th);
-  return {
-    level: Number(level?.level || 0),
-    troopCapacity: Number(level?.troopCapacity || 0),
-    spellCapacity: Number(level?.spellCapacity || 0),
-    siegeMachineCapacity: Number(level?.siegeMachineCapacity || 0)
-  };
-}
-
-function getHeroHallLevel(th) {
-  const hall = home().armyBuildings().heroHall().first();
-  const level = maxLevelForTH(hall, th);
-  return Number(level?.level || 0);
-}
-
-function getPetHouseLevel(th) {
-  const house = home().armyBuildings().petHouse().first();
-  const level = maxLevelForTH(house, th);
-  return Number(level?.level || 0);
-}
-
-function heroSummary(entity, th, heroHallLevel) {
-  if (!entity || !Array.isArray(entity.levels)) return null;
-  const eligible = entity.levels.filter(level => {
-    if (Number.isFinite(Number(level.townHallRequired))) {
-      return Number(level.townHallRequired) <= th;
-    }
-    if (Number.isFinite(Number(level.heroHallLevelRequired))) {
-      return Number(level.heroHallLevelRequired) <= heroHallLevel;
-    }
-    return true;
-  });
-  if (!eligible.length) return null;
-  const max = eligible[eligible.length - 1];
-  return {
-    id: entity.id,
-    name: entity.name,
-    maxLevel: max.level,
-    heroHallLevelRequired: Number(max.heroHallLevelRequired || 0),
-    image: entity.images?.icon || null
-  };
-}
-
-function genericHeroData(th) {
-  const hallLevel = getHeroHallLevel(th);
-  const heroes = home().heroes().get()
-    .map(h => heroSummary(h, th, hallLevel))
+      return summarizeEntity(
+        troop,
+        th,
+        "troop",
+        buildingLevel,
+        townHall.maxLaboratory
+      );
+    })
     .filter(Boolean);
-  return { heroHallLevel: hallLevel, heroes };
 }
 
-function genericPetData(th) {
-  const petHouseLevel = getPetHouseLevel(th);
-  const pets = home().pets().get().map(pet => {
+function getAvailableSpells(th) {
+  const townHall = getTownHallRecord(th);
+  if (!townHall) return [];
+
+  return COC_GAME_DATA.spells
+    .filter(spell => !spell.isSuper)
+    .map(spell => {
+      const buildingLevel =
+        spell.productionBuilding === "Spell Factory"
+          ? townHall.maxSpellFactory
+          : townHall.maxDarkSpellFactory;
+
+      return summarizeEntity(
+        spell,
+        th,
+        "spell",
+        buildingLevel,
+        townHall.maxLaboratory
+      );
+    })
+    .filter(Boolean);
+}
+
+function getAvailableOwnSiegeMachines(th) {
+  const townHall = getTownHallRecord(th);
+  if (!townHall || !townHall.maxWorkshop || townHall.siegeCapacity < 1) return [];
+
+  return COC_GAME_DATA.sieges
+    .filter(siege => !siege.isSuper)
+    .map(siege =>
+      summarizeEntity(
+        siege,
+        th,
+        "siege",
+        townHall.maxWorkshop,
+        townHall.maxLaboratory
+      )
+    )
+    .filter(Boolean);
+}
+
+function getHeroData(th) {
+  const townHall = getTownHallRecord(th);
+  const allowed = new Map(
+    (townHall?.heroMaxLevels || []).map(x => [String(x.hero).toLowerCase(), Number(x.maxLevel)])
+  );
+
+  return COC_GAME_DATA.heroes
+    .map(hero => {
+      const maxLevel = allowed.get(String(hero.name).toLowerCase());
+      if (!maxLevel) return null;
+      return {
+        name: hero.name,
+        maxLevel
+      };
+    })
+    .filter(Boolean);
+}
+
+function getAvailablePets(th) {
+  const townHall = getTownHallRecord(th);
+  const petHouseLevel = Number(townHall?.maxPetHouse || 0);
+  if (!petHouseLevel) return [];
+
+  return COC_GAME_DATA.pets.map(pet => {
     const eligible = (pet.levels || []).filter(level =>
-      (!Number.isFinite(Number(level.townHallRequired)) || Number(level.townHallRequired) <= th) &&
-      (!Number.isFinite(Number(level.petHouseLevelRequired)) || Number(level.petHouseLevelRequired) <= petHouseLevel)
+      Number(level.petHouseLevel || 0) <= petHouseLevel
     );
     if (!eligible.length) return null;
     return {
-      id: pet.id,
       name: pet.name,
-      maxLevel: eligible[eligible.length - 1].level,
-      petHouseLevelRequired: Number(eligible[0].petHouseLevelRequired || 0),
-      image: pet.images?.icon || null
+      maxLevel: Number(eligible[eligible.length - 1].level || 0)
     };
   }).filter(Boolean);
-  return { petHouseLevel, pets };
 }
 
-function genericEquipmentData(th) {
-  const blacksmith = home().armyBuildings().blacksmith().first();
-  const blacksmithLevel = maxLevelForTH(blacksmith, th)?.level || 0;
+function getAvailableEquipment(th) {
+  const townHall = getTownHallRecord(th);
+  const blacksmithLevel = Number(townHall?.maxBlacksmith || 0);
+  if (!blacksmithLevel) return [];
 
-  const equipment = home().heroEquipment().get().map(item => {
+  return COC_GAME_DATA.equipment.map(item => {
     const eligible = (item.levels || []).filter(level => {
-      const thOk = !Number.isFinite(Number(level.townHallRequired)) || Number(level.townHallRequired) <= th;
-      const bsOk = !Number.isFinite(Number(level.blacksmithLevelRequired)) || Number(level.blacksmithLevelRequired) <= blacksmithLevel;
-      return thOk && bsOk;
+      const required = level.blacksmithLevel;
+      return required == null || Number(required) <= blacksmithLevel;
     });
     if (!eligible.length) return null;
     return {
-      id: item.id,
       name: item.name,
-      hero: item.hero || item.heroName || null,
-      maxLevel: eligible[eligible.length - 1].level,
-      image: item.images?.icon || null
+      hero: item.hero || null,
+      maxLevel: Number(eligible[eligible.length - 1].level || 0)
     };
   }).filter(Boolean);
-
-  return { blacksmithLevel, equipment };
 }
 
 function getCocSnapshot(th) {
-  const army = getArmyCampCapacity(th);
-  const clanCastle = getClanCastle(th);
-  const heroData = genericHeroData(th);
-  const petData = genericPetData(th);
-  const equipmentData = genericEquipmentData(th);
+  const townHall = getTownHallRecord(th);
+  if (!townHall) throw new Error(`No verified game-data record for Town Hall ${th}.`);
 
-  const troops = home().troops().byTownHall(th).get()
-    .map(x => summarizeEntity(x, th, "troop"))
-    .filter(Boolean);
-
-  const spells = home().spells().byTownHall(th).get()
-    .map(x => summarizeEntity(x, th, "spell"))
-    .filter(Boolean);
-
-  const siegeMachines = home().siegeMachines().get()
-    .map(x => summarizeEntity(x, th, "siege"))
-    .filter(Boolean);
+  const troops = getAvailableTroops(th);
+  const spells = getAvailableSpells(th);
+  const siegeMachines = getAvailableOwnSiegeMachines(th);
+  const heroes = getHeroData(th);
+  const pets = getAvailablePets(th);
+  const equipment = getAvailableEquipment(th);
 
   return {
     townHall: th,
     dataVersion: COC_DATA_VERSION,
-    army,
-    spellCapacity: getBuildingCapacity(th, "spellFactory", "spellStorageCapacity") +
-      getBuildingCapacity(th, "darkSpellFactory", "spellStorageCapacity"),
-    clanCastle,
-    heroes: heroData.heroes,
-    heroHallLevel: heroData.heroHallLevel,
-    pets: petData.pets,
-    petHouseLevel: petData.petHouseLevel,
-    equipment: equipmentData.equipment,
-    blacksmithLevel: equipmentData.blacksmithLevel,
+    dataSource: COC_DATA_SOURCE,
+    army: {
+      camps: Number(townHall.maxBarracks || 0),
+      totalCapacity: Number(townHall.troopCapacity || 0),
+      capacityPerCamp: townHall.maxBarracks
+        ? Number(townHall.troopCapacity || 0) / Number(townHall.maxBarracks || 1)
+        : 0,
+      ownSiegeCapacity: Number(townHall.siegeCapacity || 0)
+    },
+    // This is the player's total spell-storage capacity.
+    // Do NOT add Spell Factory + Dark Spell Factory capacities together.
+    spellCapacity: Number(townHall.spellCapacity || 0),
+    clanCastle: {
+      level: Number(townHall.maxCc || 0),
+      troopCapacity: Number(townHall.ccTroopCapacity || 0),
+      spellCapacity: Number(townHall.ccSpellCapacity || 0),
+      siegeMachineCapacity: Number(townHall.ccSiegeCapacity || 0)
+    },
+    heroes,
+    heroHallLevel: null,
+    pets,
+    petHouseLevel: Number(townHall.maxPetHouse || 0),
+    equipment,
+    blacksmithLevel: Number(townHall.maxBlacksmith || 0),
     troops,
     spells,
-    siegeMachines
+    siegeMachines,
+    counts: {
+      availableTroops: troops.length,
+      availableSpells: spells.length,
+      availableOwnSiegeMachines: siegeMachines.length,
+      availableHeroes: heroes.length,
+      availablePets: pets.length,
+      availableEquipment: equipment.length
+    }
   };
 }
 
@@ -369,6 +400,15 @@ app.get("/api/coc/game-data", (req, res) => {
     console.error("CoC data error:", err);
     res.status(500).json({ error: "Unable to load Clash of Clans game data." });
   }
+});
+
+app.get("/api/coc/data-source", (_req, res) => {
+  res.json({
+    dataVersion: COC_DATA_VERSION,
+    source: COC_DATA_SOURCE,
+    townHalls: COC_GAME_DATA.townHalls.length,
+    note: "Structured fan-maintained data supplied with this backend; not the official Supercell API."
+  });
 });
 
 /* -------------------- COC AI GENERATOR -------------------- */
