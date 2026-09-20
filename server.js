@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V8 · 2026-09-20";
+const BACKEND_BUILD = "V9 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -288,5 +288,162 @@ function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCou
   const eqSlots=new Map(); for(const e of Array.isArray(army.equipment)?army.equipment:[]){const hero=find(data.heroes,e.hero),item=find(data.equipment,e.equipment);if(!hero||!item||item.hero!==hero.name){errors.push(`Unavailable equipment assignment: ${e.hero}/${e.equipment}`);continue;}if(!heroSet.has(hero.name))errors.push(`Equipment assigned to unselected hero: ${hero.name}`);const n=(eqSlots.get(hero.name)||0)+1;if(n>2)errors.push(`More than two equipment items on ${hero.name}`);eqSlots.set(hero.name,n);}
   return {ok:errors.length===0,errors,totals:{troopSpace:ts,troopCapacity:data.army.totalCapacity,spellSpace:ss,spellCapacity:data.spellCapacity,clanCastleTroopSpace:cs,clanCastleTroopCapacity:data.clanCastle.troopCapacity,clanCastleSpellSpace:css,clanCastleSpellCapacity:data.clanCastle.spellCapacity}};
 }
+
+
+
+// ---------------- AI BASE GENERATOR V9 ----------------
+// Base layouts are community-shared deep links. We do not synthesize or alter layout payloads;
+// the server selects a verified catalog entry matching the requested Town Hall and validates
+// its Supercell share-link structure before returning it.
+const BASE_CATALOG_URL = 'https://raw.githubusercontent.com/nschmeller/clash-bases/main/bases.json';
+const BASE_CATALOG_TTL_MS = 10 * 60 * 1000;
+let baseCatalogCache = { loadedAt: 0, entries: null };
+
+function validBaseLink(link, th) {
+  if (typeof link !== 'string' || !link.startsWith('https://link.clashofclans.com/')) return false;
+  try {
+    const u = new URL(link);
+    if (u.searchParams.get('action') !== 'OpenLayout') return false;
+    const id = decodeURIComponent(u.searchParams.get('id') || '');
+    const m = id.match(/^TH(\d+):(HV|WB):([A-Za-z0-9_-]{32})$/);
+    return !!m && Number(m[1]) === Number(th);
+  } catch (_) { return false; }
+}
+
+async function loadBaseCatalog() {
+  if (baseCatalogCache.entries && Date.now() - baseCatalogCache.loadedAt < BASE_CATALOG_TTL_MS) {
+    return baseCatalogCache.entries;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const r = await fetch(BASE_CATALOG_URL, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error(`Base catalog request failed (${r.status})`);
+    const raw = await r.json();
+    if (!Array.isArray(raw)) throw new Error('Base catalog returned an invalid payload.');
+    const entries = raw.filter(x => Number.isInteger(Number(x?.town_hall)) && Number(x.town_hall) >= 4 && Number(x.town_hall) <= 18 && validBaseLink(x?.link, Number(x.town_hall)));
+    if (!entries.length) throw new Error('Base catalog contains no structurally valid layouts.');
+    baseCatalogCache = { loadedAt: Date.now(), entries };
+    return entries;
+  } finally { clearTimeout(timer); }
+}
+
+function baseTypesFor(entries, th) {
+  const counts = {};
+  for (const x of entries) if (Number(x.town_hall) === th) counts[x.type || 'Home Village'] = (counts[x.type || 'Home Village'] || 0) + 1;
+  return counts;
+}
+
+function chooseBaseFallback(th, typeCounts) {
+  const preferred = th >= 11 ? ['War', 'Hybrid', 'Trophy', 'Farm', 'Home Village'] : ['Hybrid', 'War', 'Farm', 'Trophy', 'Home Village'];
+  return preferred.find(x => Number(typeCounts[x] || 0) > 0) || Object.keys(typeCounts)[0] || 'Home Village';
+}
+
+async function askAiForBaseType(th, typeCounts) {
+  if (!process.env.OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is not configured.');
+  const available = Object.entries(typeCounts).map(([k,v]) => `${k}:${v}`).join(', ');
+  const prompt = [
+    `Town Hall ${th}. Choose one base purpose from the available community catalog.`,
+    `Available types: ${available}`,
+    `Prefer War for defensive war layouts, Farm for loot protection, Trophy for trophy protection, Hybrid for a balanced home base, and Home Village for general use.`,
+    `Return JSON exactly like {"baseType":"War"}. Do not return a layout link or coordinates.`
+  ].join('\n');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 18000);
+  try {
+    const r = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://jagathish.online', 'X-Title': 'Jagathish CoC Base AI' },
+      body: JSON.stringify({ model: OPENROUTER_MODEL, temperature: 0.1, max_tokens: 80, reasoning: { effort: 'none' }, messages: [
+        { role: 'system', content: 'You are a Clash of Clans base-purpose selector. Output JSON only.' },
+        { role: 'user', content: prompt }
+      ], response_format: { type: 'json_object' } }),
+      signal: controller.signal
+    });
+    const raw = await r.text();
+    let j = null; try { j = JSON.parse(raw); } catch (_) {}
+    if (!r.ok) throw new Error(`AI provider request failed (${r.status})`);
+    const out = cleanAi(j?.choices?.[0]?.message?.content);
+    const type = String(out?.baseType || '').trim();
+    if (!Object.prototype.hasOwnProperty.call(typeCounts, type)) throw new Error('AI selected an unavailable base type.');
+    return { baseType: type, model: j?.model || OPENROUTER_MODEL };
+  } finally { clearTimeout(timeout); }
+}
+
+function selectBase(entries, th, baseType) {
+  const sameTh = entries.filter(x => Number(x.town_hall) === th);
+  const typed = sameTh.filter(x => String(x.type || '').toLowerCase() === String(baseType).toLowerCase());
+  const pool = typed.length ? typed : sameTh;
+  if (!pool.length) throw new Error(`No community base layouts are available for Town Hall ${th}.`);
+  // Prefer recently added entries, then stable id ordering. This keeps selection deterministic and avoids
+  // making a subjective "best base" claim.
+  return [...pool].sort((a,b) => String(b.added || '').localeCompare(String(a.added || '')) || String(a.id || '').localeCompare(String(b.id || '')))[0];
+}
+
+app.get('/api/coc/base-catalog-status', async (req, res) => {
+  const th = validTH(req.query.townHall);
+  if (!th) return res.status(400).json({ error: 'townHall must be an integer from 1 to 18.' });
+  try {
+    const entries = await loadBaseCatalog();
+    const counts = baseTypesFor(entries, th);
+    res.json({ townHall: th, available: Object.values(counts).reduce((a,b)=>a+b,0), types: counts, source: 'community catalog: nschmeller/clash-bases', catalogUrl: BASE_CATALOG_URL });
+  } catch (e) {
+    res.status(503).json({ error: e?.message || 'Base catalog unavailable.' });
+  }
+});
+
+app.post('/api/coc/generate-base', async (req, res) => {
+  const th = validTH(req.body?.townHall);
+  if (!th) return res.status(400).json({ error: 'townHall must be an integer from 1 to 18.' });
+  try {
+    if (th < 4) return res.status(400).json({ error: 'Base generator starts at Town Hall 4 because the community layout catalog begins at TH4.' });
+    const entries = await loadBaseCatalog();
+    const typeCounts = baseTypesFor(entries, th);
+    if (!Object.keys(typeCounts).length) return res.status(404).json({ error: `No community base layouts are available for Town Hall ${th}.` });
+
+    let baseType, model = OPENROUTER_MODEL, generationMode = 'ai-base-type', providerReason = '';
+    try {
+      const ai = await askAiForBaseType(th, typeCounts);
+      baseType = ai.baseType;
+      model = ai.model;
+    } catch (e) {
+      providerReason = e?.message || 'AI provider unavailable';
+      baseType = chooseBaseFallback(th, typeCounts);
+      generationMode = 'verified-server-base-fallback';
+      console.warn('AI base selector unavailable; using deterministic base type:', providerReason);
+    }
+
+    const selected = selectBase(entries, th, baseType);
+    if (!validBaseLink(selected.link, th)) return res.status(500).json({ error: 'Selected base link failed server validation.' });
+
+    const strategySource = generationMode === 'ai-base-type' ? 'AI' : 'verified-server-fallback';
+    res.json({
+      success: true,
+      townHall: th,
+      model,
+      generationMode,
+      strategySource,
+      providerReason,
+      base: {
+        id: selected.id || null,
+        name: selected.name || `TH${th} ${baseType} Base`,
+        type: selected.type || baseType,
+        link: selected.link,
+        image: selected.image || null,
+        description: selected.description || '',
+        builder: selected.builder || 'Community catalog',
+        tags: Array.isArray(selected.tags) ? selected.tags : [],
+        added: selected.added || null
+      },
+      source: 'Community layout catalog · structurally validated Supercell OpenLayout link',
+      summary: providerReason
+        ? `AI base selector was unavailable (${providerReason}). A verified ${baseType} community layout was selected for TH${th}.`
+        : `AI selected ${baseType}. The server selected and validated a matching TH${th} community layout link.`
+    });
+  } catch (e) {
+    console.error('CoC V9 base generation error:', e);
+    res.status(e?.name === 'AbortError' ? 504 : 500).json({ error: e?.name === 'AbortError' ? 'Base catalog or AI provider timed out.' : (e.message || 'Unable to generate base.') });
+  }
+});
 
 app.listen(PORT,()=>console.log(`Server Running On Port ${PORT}`));

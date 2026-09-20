@@ -1,22 +1,43 @@
-# Jagathish Backend — CoC AI V8
+# Jagathish Backend — CoC AI V9
 
-V8 keeps the ClashArmies-based verified game-data and deterministic strategy engine from V7, and adds:
+V9 keeps the V8 verified Army Generator and adds an AI Base Generator.
 
-- AI used only as a strategy selector, never as the authority for exact troop counts.
-- Automatic deterministic fallback when OpenRouter is unavailable or rate-limited.
-- Exact server-side capacity and unlock validation.
-- Generated Clash of Clans Army Link using the same section format used by the ClashArmies source (`h`, `i`, `d`, `u`, `s`).
-- Response metadata distinguishing `ai-strategy` from `verified-server-strategy`.
+## Army generator
 
-## Endpoints
+- `GET /api/coc/game-data?townHall=5`
+- `POST /api/coc/generate-army`
+- AI chooses a strategy only.
+- The server builds the exact roster from verified ClashArmies data and validates capacities/unlocks.
+- AI provider failure falls back to a deterministic verified strategy.
+- Returns a real `CopyArmy` deep link when the generated roster can be encoded.
 
-- `GET /api/coc/game-data?townHall=8`
-- `POST /api/coc/generate-army` with `{ "townHall": 8 }`
+## Base generator
 
-The generation response includes `armyLink` when the generated army has shareable content.
+- `GET /api/coc/base-catalog-status?townHall=5`
+- `POST /api/coc/generate-base`
+- User supplies only Town Hall.
+- AI chooses a base purpose (`War`, `Farm`, `Trophy`, `Hybrid`, `Home Village`, etc.) from the available catalog for that Town Hall.
+- The server selects a matching community layout instead of inventing layout bytes.
+- The returned `OpenLayout` link is structurally validated before it reaches the frontend.
+- AI provider failure falls back to a deterministic base-purpose selection.
+
+### Community base catalog
+
+V9 reads the public community catalog maintained at:
+
+`https://github.com/nschmeller/clash-bases`
+
+The catalog itself credits upstream base sources/builders. V9 does not rewrite layout payloads. It filters by Town Hall/type and returns the catalogued deep link.
+
+Base links are community content and are not official Supercell API data. Clash of Clans and Supercell are trademarks of Supercell Oy; this project is an independent fan tool.
 
 ## Environment
 
-- `OPENROUTER_API_KEY` — optional for AI strategy selection. The server still generates a verified army without it.
-- `OPENROUTER_MODEL` — defaults to `openrouter/free`; the server resolves that to a free strategy-selector model.
-- Existing Supabase variables remain unchanged.
+- `SUPABASE_KEY`
+- `SUPABASE_URL`
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL` (defaults to `openrouter/free` and resolves to the configured free model mapping)
+
+## Build marker
+
+`V9 · 2026-09-20`
