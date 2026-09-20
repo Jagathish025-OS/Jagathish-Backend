@@ -1,4 +1,4 @@
-# Jagathish Backend — CoC AI V9
+# Jagathish Backend — CoC AI V9.1
 
 V9 keeps the V8 verified Army Generator and adds an AI Base Generator.
 
@@ -41,3 +41,6 @@ Base links are community content and are not official Supercell API data. Clash 
 ## Build marker
 
 `V9 · 2026-09-20`
+
+
+V9.1 fix: the upstream nschmeller/clash-bases `bases.json` export is currently wrapped as `{ "bases": [...] }`; the loader now accepts that shape as well as an older top-level array.

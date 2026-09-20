@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V9 · 2026-09-20";
+const BACKEND_BUILD = "V9.1 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -320,8 +320,11 @@ async function loadBaseCatalog() {
     const r = await fetch(BASE_CATALOG_URL, { signal: controller.signal, headers: { Accept: 'application/json' } });
     if (!r.ok) throw new Error(`Base catalog request failed (${r.status})`);
     const raw = await r.json();
-    if (!Array.isArray(raw)) throw new Error('Base catalog returned an invalid payload.');
-    const entries = raw.filter(x => Number.isInteger(Number(x?.town_hall)) && Number(x.town_hall) >= 4 && Number(x.town_hall) <= 18 && validBaseLink(x?.link, Number(x.town_hall)));
+    // nschmeller/clash-bases currently wraps the catalogue in { bases: [...] }.
+    // Keep compatibility with older array-shaped exports as well.
+    const sourceEntries = Array.isArray(raw) ? raw : (Array.isArray(raw?.bases) ? raw.bases : null);
+    if (!sourceEntries) throw new Error('Base catalog returned an invalid payload. Expected an array or { bases: [...] }.');
+    const entries = sourceEntries.filter(x => Number.isInteger(Number(x?.town_hall)) && Number(x.town_hall) >= 4 && Number(x.town_hall) <= 18 && validBaseLink(x?.link, Number(x.town_hall)));
     if (!entries.length) throw new Error('Base catalog contains no structurally valid layouts.');
     baseCatalogCache = { loadedAt: Date.now(), entries };
     return entries;
