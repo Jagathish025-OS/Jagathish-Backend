@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V12 · 2026-09-20";
+const BACKEND_BUILD = "V14 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -291,7 +291,7 @@ function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCou
 
 
 
-// ---------------- AI BASE GENERATOR V11 ----------------
+// ---------------- AI BASE GENERATOR V14 ----------------
 // Base layouts are community-shared deep links. We do not synthesize or alter layout payloads;
 // the server selects a verified catalog entry matching the requested Town Hall and validates
 // its Supercell share-link structure before returning it.
@@ -299,6 +299,23 @@ const BASE_CATALOG_URL = 'https://raw.githubusercontent.com/nschmeller/clash-bas
 const BASE_CATALOG_TTL_MS = 10 * 60 * 1000;
 let baseCatalogCache = { loadedAt: 0, entries: null };
 
+function decodeOpenLayoutPayload(blob) {
+  try {
+    const normalized=String(blob).replace(/-/g,'+').replace(/_/g,'/');
+    const padded=normalized + '='.repeat((4-normalized.length%4)%4);
+    const bytes=Buffer.from(padded,'base64');
+    if(bytes.length!==24)return null;
+    const index=bytes.readUInt32BE(0);
+    const slot=bytes.readUInt32BE(4);
+    const tag=bytes.subarray(8,24);
+    const counts=new Map(); for(const b of tag)counts.set(b,(counts.get(b)||0)+1);
+    let entropy=0; for(const c of counts.values()){const p=c/tag.length; entropy-=p*Math.log2(p);}
+    const printable=Array.from(tag).filter(b=>b>=0x20&&b<0x7f).length;
+    const diffs=new Set(); for(let i=1;i<tag.length;i++)diffs.add((tag[i]-tag[i-1]+256)%256);
+    const pathological=tag.every(b=>b===0)||new Set(tag).size===1||(diffs.size===1&&(diffs.has(1)||diffs.has(255)))||printable>=15;
+    return {index,slot,tagEntropy:entropy,pathological};
+  }catch(_){return null;}
+}
 function validBaseLink(link, th) {
   if (typeof link !== 'string' || !link.startsWith('https://link.clashofclans.com/')) return false;
   try {
@@ -306,7 +323,9 @@ function validBaseLink(link, th) {
     if (u.searchParams.get('action') !== 'OpenLayout') return false;
     const id = decodeURIComponent(u.searchParams.get('id') || '');
     const m = id.match(/^TH(\d+):(HV|WB):([A-Za-z0-9_-]{32})$/);
-    return !!m && Number(m[1]) === Number(th);
+    if(!m || Number(m[1]) !== Number(th)) return false;
+    const payload=decodeOpenLayoutPayload(m[3]);
+    return !!payload && payload.slot>=1 && payload.slot<=3 && payload.index<1000 && payload.tagEntropy>=2.5 && !payload.pathological;
   } catch (_) { return false; }
 }
 
@@ -381,6 +400,61 @@ async function askAiForBaseType(th, typeCounts) {
     if (!Object.prototype.hasOwnProperty.call(typeCounts, type)) throw new Error('AI selected an unavailable base type.');
     return { baseType: type, model: j?.model || OPENROUTER_MODEL };
   } finally { clearTimeout(timeout); }
+}
+
+
+function creativeTokens(idea, prompt, category) {
+  const raw = [idea?.title, idea?.category, idea?.concept, idea?.visualPattern, idea?.style, ...(Array.isArray(idea?.tags) ? idea.tags : []), prompt, category].filter(Boolean).join(' ').toLowerCase();
+  const stop = new Set(['base','town','hall','th','layout','creative','ai','the','and','for','with','this','that','from','into','around','design','defensive','concept','category','pattern','high','medium','low']);
+  const tokens = raw.replace(/[^a-z0-9]+/g,' ').split(/\s+/).filter(x=>x.length>=3 && !stop.has(x));
+  const aliases = {dragon:['dragon','wyvern','beast','creature'],skull:['skull','bone','bones','skeleton'],heart:['heart','love'],crown:['crown','royal','king','queen'],star:['star','stellar','galaxy','space'],maze:['maze','labyrinth','puzzle'],spiral:['spiral','swirl','infinity'],shield:['shield','guard','fortress'],fire:['fire','flame','phoenix'],sword:['sword','blade'],eagle:['eagle','bird'],tiger:['tiger','animal'],robot:['robot','machine','cyber'],flower:['flower','floral'],diamond:['diamond','gem'],clover:['clover'],infinity:['infinity','loop'],letter:['letter','alphabet'],number:['number','digit'],chaos:['chaos','random','experimental']};
+  for (const [k, vals] of Object.entries(aliases)) if (raw.includes(k)) tokens.push(...vals);
+  return [...new Set(tokens)].slice(0,40);
+}
+function scoreCreativeCandidate(entry, tokens, category) {
+  const text = [entry.name, entry.type, entry.description, ...(Array.isArray(entry.tags)?entry.tags:[])].filter(Boolean).join(' ').toLowerCase();
+  let score = 0;
+  for (const t of tokens) { if (text.includes(t)) score += text.indexOf(t) === -1 ? 0 : 3; }
+  const type = String(entry.type||'').toLowerCase();
+  if (['fun','meme / troll','character','creature','icon / symbol','shape / pattern','maze / puzzle','theme','fantasy','abstract','experimental'].includes(String(category).toLowerCase())) {
+    if (type === 'fun') score += 8;
+    if (type === 'home village') score += 2;
+  }
+  if (String(category).toLowerCase() === 'war' && type === 'war') score += 8;
+  if (String(category).toLowerCase() === 'farm' && type === 'farm') score += 8;
+  if (String(category).toLowerCase() === 'trophy' && type === 'trophy') score += 8;
+  if (String(category).toLowerCase() === 'hybrid' && type === 'hybrid') score += 8;
+  return score;
+}
+function creativeCandidatePool(entries, th, idea, prompt, category) {
+  const tokens = creativeTokens(idea,prompt,category);
+  const pool = entries.filter(x=>Number(x.town_hall)===th).map(x=>({entry:x,score:scoreCreativeCandidate(x,tokens,category)}));
+  pool.sort((a,b)=>b.score-a.score || String(b.entry.added||'').localeCompare(String(a.entry.added||'')) || String(a.entry.id||'').localeCompare(String(b.entry.id||'')));
+  const top = pool.filter(x=>x.score>0).slice(0,18);
+  const fallback = pool.filter(x=>!top.some(y=>y.entry.id===x.entry.id)).slice(0,12);
+  return [...top,...fallback].slice(0,24);
+}
+async function askAiForCreativeOpenLayout(th, category, idea, prompt, candidates) {
+  if (!process.env.OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is not configured.');
+  const compact = candidates.slice(0,12).map((x,i)=>({index:i,id:x.entry.id,name:x.entry.name,type:x.entry.type,tags:x.entry.tags||[],description:x.entry.description||''}));
+  const userPrompt = [
+    `Town Hall ${th}. Select the most suitable EXISTING community OpenLayout for an AI creative concept.`,
+    `Creative category: ${category}.`,
+    `Concept: ${idea?.title||'AI Surprise'} — ${idea?.concept||''}.`,
+    `User prompt: ${String(prompt||'').slice(0,500)}`,
+    'Do not invent, alter, encode, or return an OpenLayout link. Select only one candidate index from the supplied list.',
+    `Candidates: ${JSON.stringify(compact)}`,
+    'Return JSON exactly: {"index":0,"reason":"short matching explanation"}.'
+  ].join('\n');
+  const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),18000);
+  try {
+    const r=await fetch(OPENROUTER_URL,{method:'POST',headers:{Authorization:`Bearer ${process.env.OPENROUTER_API_KEY}`,'Content-Type':'application/json','HTTP-Referer':'https://jagathish.online','X-Title':'Jagathish CoC AI Creative OpenLayout'},body:JSON.stringify({model:OPENROUTER_MODEL,temperature:0.2,max_tokens:180,reasoning:{effort:'none'},messages:[{role:'system',content:'You are a Clash of Clans creative-layout curator. Choose only from supplied candidates. Output JSON only.'},{role:'user',content:userPrompt}],response_format:{type:'json_object'}}),signal:controller.signal});
+    const raw=await r.text(); let j=null; try{j=JSON.parse(raw);}catch(_){ }
+    if(!r.ok) throw new Error(`AI provider request failed (${r.status})`);
+    const out=cleanAi(j?.choices?.[0]?.message?.content); const idx=Number(out?.index);
+    if(!Number.isInteger(idx)||idx<0||idx>=compact.length) throw new Error('AI selected an invalid catalog candidate.');
+    return {index:idx,reason:String(out?.reason||'AI selected the closest available community layout.').slice(0,300),model:j?.model||OPENROUTER_MODEL};
+  } finally {clearTimeout(timeout);}
 }
 
 function selectBase(entries, th, baseType) {
@@ -506,7 +580,7 @@ async function askAiForCreativeIdeas(th, category, prompt) {
     'Invent THREE clearly different base concepts. You may invent a more specific sub-category if useful.',
     'Think about shapes, icons, characters, creatures, letters, numbers, mazes, symbols, themes, jokes, patterns, symmetry, asymmetry and unusual concepts.',
     'The concepts are design blueprints, not official Clash layouts. Never invent an OpenLayout link.',
-    'Return JSON only: {"ideas":[{"title":"...","category":"...","icon":"...","concept":"...","style":"...","defensiveGoal":"...","visualPattern":"...","tags":["..."]}]}.'
+    'Return JSON only: {"ideas":[{"title":"...","category":"...","icon":"...","concept":"...","style":"...","defensiveGoal":"...","visualPattern":"...","symmetry":"high|medium|low","density":0.24,"coreStyle":"compact|ring|distributed","tags":["..."]}]}.'
   ].join('\n');
   const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),18000);
   try {
@@ -517,7 +591,7 @@ async function askAiForCreativeIdeas(th, category, prompt) {
     const ideas=Array.isArray(out?.ideas)?out.ideas.slice(0,3).map((x,i)=>({
       title:String(x?.title||`AI Concept ${i+1}`).slice(0,80), category:String(x?.category||requested).slice(0,50), icon:String(x?.icon||'✨').slice(0,12),
       concept:String(x?.concept||'Creative Town Hall base concept.').slice(0,500), style:String(x?.style||'distinctive').slice(0,100),
-      defensiveGoal:String(x?.defensiveGoal||'Protect the core while preserving the concept.').slice(0,250), visualPattern:String(x?.visualPattern||'custom').slice(0,80),
+      defensiveGoal:String(x?.defensiveGoal||'Protect the core while preserving the concept.').slice(0,250), visualPattern:String(x?.visualPattern||'custom').slice(0,80), symmetry:['high','medium','low'].includes(String(x?.symmetry||'').toLowerCase())?String(x.symmetry).toLowerCase():'medium', density:Math.max(.12,Math.min(.42,Number(x?.density)||.24)), coreStyle:['compact','ring','distributed'].includes(String(x?.coreStyle||'').toLowerCase())?String(x.coreStyle).toLowerCase():'compact',
       tags:Array.isArray(x?.tags)?x.tags.slice(0,6).map(v=>String(v).slice(0,30)):[]
     })):[];
     if(ideas.length<3) throw new Error('AI returned fewer than three creative concepts.');
@@ -556,22 +630,61 @@ function pointInTheme(theme,x,y,n=22) {
 }
 function aWrap(x,y){const a=Math.atan2(y,x);return (a+Math.PI)/(2*Math.PI)*8;}
 
-function buildCreativeBlueprint(th, purpose, prompt, idea={}) {
-  const theme=creativeThemeFromPrompt(prompt,idea.visualPattern||idea.icon); const n=22,placements=[]; const cx=Math.floor(n/2),cy=Math.floor(n/2);
-  placements.push({id:'town_hall',x:cx-1,y:cy-1,w:2,h:2,category:'core'});
-  const defenseIds=['inferno_tower','x_bow','air_defense','wizard_tower','archer_tower','cannon']; let di=0;
-  const density=Math.max(.12,Math.min(.45,Number(idea.density||.28)));
-  for(let y=0;y<n;y++) for(let x=0;x<n;x++) {
-    if(x>=cx-1&&x<=cx&&y>=cy-1&&y<=cy) continue;
-    if(!pointInTheme(theme,x,y,n)) continue;
-    if(x===0||y===0||x===n-1||y===n-1) continue;
-    const hash=((x*37+y*61)%100)/100;
-    if(hash<density && placements.length<90) placements.push({id:'wall',x,y,w:1,h:1,category:'wall'});
-    else if(hash<density+.12 && placements.length<52) placements.push({id:defenseIds[di++%defenseIds.length],x,y,w:1,h:1,category:'defense'});
-  }
-  const occupied=new Set(),valid=[]; for(const p of placements){const key=`${p.x},${p.y}`;if(!occupied.has(key)){occupied.add(key);valid.push(p);}}
-  return {townHall:th,purpose,theme,prompt,idea,gridSize:n,placements:valid,validation:{ok:true,level:'structural',issues:[]},note:'AI-designed creative blueprint rendered by the server. It is a concept/export blueprint, not an official OpenLayout export.'};
+function layoutThemeMask(theme, x, y, n=44) {
+  const cx=(n-1)/2, cy=(n-1)/2, dx=x-cx, dy=y-cy, r=Math.hypot(dx,dy);
+  if(theme==='Heart') return (dx*dx+Math.pow(dy-Math.abs(dx)*.62,2)<150&&dy<8)||(r<9);
+  if(theme==='Star'){const a=Math.atan2(dy,dx),rr=14*Math.cos(5*a)+18;return r<Math.max(0,rr);}
+  if(theme==='Geometric') return r>14&&r<18;
+  if(theme==='Spiral') return Math.abs(r-(2.1*((Math.atan2(dy,dx)+Math.PI)/(2*Math.PI)*18)))<1.5;
+  if(theme==='Skull') return (Math.abs(dx)<13&&Math.abs(dy)<11)||(Math.abs(dx)<6&&dy>8&&dy<17);
+  if(theme==='Crown') return dy>-4&&dy<12&&Math.abs(dx)<18&&((Math.abs(dx)>10&&dy<2)||Math.abs(dx)<13);
+  if(theme==='Sword') return Math.abs(dx)<3||(Math.abs(dy)<3&&dy<-8);
+  if(theme==='Shield') return (dx*dx/300)+(dy*dy/440)<1&&dy>-15;
+  if(theme==='Fire') return r<17&&dy<10&&Math.sin(dx*.8+dy*.45)>-.4;
+  if(theme==='Robot') return (Math.abs(dx)<14&&Math.abs(dy)<14)||(Math.abs(dx)<18&&dy>11&&dy<18);
+  if(theme==='Dragon') return (Math.abs(dx)<6&&dy<15)||(Math.abs(dx)>7&&Math.abs(dx)<19&&dy>0&&dy<10)||(dx*dx/300+dy*dy/160<1&&dy<0);
+  if(theme==='Eagle'||theme==='Tiger') return Math.abs(dx)<4||(Math.abs(dx)>5&&Math.abs(dx)<20&&Math.abs(dy)<Math.max(2,14-Math.abs(dx)*.42));
+  if(theme==='Maze') return (Math.abs(Math.round(dx))%7<1||Math.abs(Math.round(dy))%7<1)&&r<19;
+  if(theme==='Space'||theme==='Flower') return r<18&&((Math.round(x*7+y*13)%17)===0||r<7);
+  if(theme==='Diamond') return Math.abs(dx)+Math.abs(dy)<20;
+  if(theme==='Lightning') return Math.abs(dx+dy*.55)<2.5||Math.abs(dx-dy*.55)<2.5;
+  if(theme==='Clover') return ((dx-8)**2+(dy-8)**2<90)||((dx+8)**2+(dy-8)**2<90)||((dx-8)**2+(dy+8)**2<90)||((dx+8)**2+(dy+8)**2<90);
+  if(theme==='Infinity') return Math.abs(((dx*dx)/75-(dy*dy)/58)-1)<2.5;
+  if(theme==='Letter'||theme==='Number') return Math.abs(dx)<3||Math.abs(dy)<3||Math.abs(dx-dy)<3||Math.abs(dx+dy)<3;
+  if(theme==='Chaos') return ((x*17+y*31)%11)<4&&r<19;
+  return r<16;
 }
+
+const CREATIVE_FOOTPRINTS={
+  town_hall:[4,4,'core'], defense:[2,2,'defense'], wall:[1,1,'wall'], resource:[3,3,'resource'], support:[3,3,'support'], trap:[1,1,'trap'], decor:[2,2,'decor']
+};
+function rectCells(p){const out=[];for(let yy=p.y;yy<p.y+p.h;yy++)for(let xx=p.x;xx<p.x+p.w;xx++)out.push(`${xx},${yy}`);return out;}
+function canPlace(p,occupied,n){if(p.x<1||p.y<1||p.x+p.w>n-1||p.y+p.h>n-1)return false;return rectCells(p).every(k=>!occupied.has(k));}
+function addPlacement(list,occupied,p){if(!canPlace(p,occupied,44))return false;list.push(p);rectCells(p).forEach(k=>occupied.add(k));return true;}
+function mirrorPoint(x,y,n,mode){if(mode==='horizontal')return [n-1-x,y];if(mode==='vertical')return [x,n-1-y];return [n-1-x,n-1-y];}
+function perimeterCandidates(theme,n){const pts=[];for(let y=3;y<n-3;y+=2)for(let x=3;x<n-3;x+=2){const inside=layoutThemeMask(theme,x,y,n), near=!layoutThemeMask(theme,Math.min(n-1,x+3),y,n)||!layoutThemeMask(theme,x,Math.min(n-1,y+3),n);if(inside&&near)pts.push([x,y]);}return pts;}
+function compileCreativeLayout(th,purpose,prompt,idea={}){
+  const theme=creativeThemeFromPrompt(prompt,idea.visualPattern||idea.icon); const n=44; const cx=22,cy=22; const placements=[]; const occupied=new Set(); const symmetry=idea.symmetry||'medium';
+  addPlacement(placements,occupied,{id:'town_hall',x:20,y:20,w:4,h:4,category:'core'});
+  const coreStyle=idea.coreStyle||'compact';
+  const defenseSpots=coreStyle==='ring'?[[14,20],[24,14],[30,20],[24,28],[14,28],[20,14],[28,24],[20,28]]:[[12,20],[20,12],[28,20],[20,28],[14,14],[26,14],[26,26],[14,26]];
+  const defenseIds=['inferno_tower','x_bow','air_defense','wizard_tower','archer_tower','cannon','mortar','air_sweeper'];
+  let di=0;
+  for(const [x,y] of defenseSpots){const p={id:defenseIds[di++%defenseIds.length],x,y,w:2,h:2,category:'defense'}; if(addPlacement(placements,occupied,p)&&symmetry==='high'){const [mx,my]=mirrorPoint(x,y,n,'both');addPlacement(placements,occupied,{...p,x:mx,y:my,id:defenseIds[di++%defenseIds.length]});}}
+  const mask=[];for(let y=2;y<n-2;y++)for(let x=2;x<n-2;x++)if(layoutThemeMask(theme,x,y,n))mask.push([x,y]);
+  const wallDensity=Math.max(.18,Math.min(.55,Number(idea.density)||.24));
+  let step=Math.max(2,Math.round(1/wallDensity*2));
+  for(let i=0;i<mask.length;i+=step){const [x,y]=mask[i];if(Math.abs(x-cx)<5&&Math.abs(y-cy)<5)continue;addPlacement(placements,occupied,{id:'wall',x,y,w:1,h:1,category:'wall'});if(placements.length>260)break;}
+  // Add a second defensive/support layer around the concept boundary.
+  const perimeter=perimeterCandidates(theme,n); let pi=0;
+  while(pi<perimeter.length&&placements.length<105){const [x,y]=perimeter[pi++];const p={id:pi%3===0?'resource':'support',x,y,w:3,h:3,category:pi%3===0?'resource':'support'};addPlacement(placements,occupied,p);}
+  // Place trap markers in open boundary gaps. These are blueprint semantics, not a game export.
+  let traps=0;for(const [x,y] of perimeter){if(traps>=12)break;const p={id:'trap',x,y,w:1,h:1,category:'trap'};if(addPlacement(placements,occupied,p))traps++;}
+  const issues=[]; if(!placements.some(p=>p.id==='town_hall'))issues.push('Town Hall missing');
+  const out={townHall:th,purpose,theme,prompt,idea,gridSize:n,coordinateSystem:'44x44 blueprint grid',placements,metrics:{placedObjects:placements.length,walls:placements.filter(p=>p.category==='wall').length,defenses:placements.filter(p=>p.category==='defense').length,support:placements.filter(p=>p.category==='support'||p.category==='resource').length,traps:placements.filter(p=>p.category==='trap').length,symmetry},validation:{ok:issues.length===0,level:'geometry-and-collision',issues},export:{format:'jagathish-coc-blueprint-v1',playableOpenLayout:false,reason:'Supercell OpenLayout payloads are game-generated and not publicly authorable from arbitrary coordinates.'},note:'AI concept compiled into a collision-checked 44×44 semantic blueprint. It is not an official OpenLayout payload.'};
+  return out;
+}
+function buildCreativeBlueprint(th,purpose,prompt,idea={}){return compileCreativeLayout(th,purpose,prompt,idea);}
 
 app.post('/api/coc/generate-base-ideas', async (req,res)=>{
   const th=validTH(req.body?.townHall); if(!th)return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
@@ -606,8 +719,18 @@ app.post('/api/coc/generate-base-blueprint', async (req,res)=>{
       }catch(e){generationMode='verified-blueprint-fallback';refinedIdea={...fallbackCreativeIdeas(th,purpose,prompt)[0],...idea};}
     }else generationMode='verified-blueprint-fallback';
     const selected=buildCreativeBlueprint(th,purpose,prompt,refinedIdea);
-    return res.json({success:true,townHall:th,generationMode,strategySource:generationMode==='ai-blueprint'?'AI':'verified-server-fallback',model,selected,candidates:[selected],export:{openLayout:false,jsonBlueprint:true},provider:generationMode==='ai-blueprint'?'OpenRouter creative model':'verified-server-creative-engine'});
+    return res.json({success:true,townHall:th,generationMode,strategySource:generationMode==='ai-blueprint'?'AI':'verified-server-fallback',model,selected,candidates:[selected],export:{openLayout:false,jsonBlueprint:true,compiler:'jagathish-coc-blueprint-v1'},provider:generationMode==='ai-blueprint'?'OpenRouter creative model':'verified-server-creative-engine'});
   }catch(e){return res.status(500).json({error:e?.message||'Creative blueprint generation failed.'});}
+});
+
+app.post('/api/coc/compile-creative-layout', async (req,res)=>{
+  const th=validTH(req.body?.townHall); if(!th)return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  if(th<4)return res.status(400).json({error:'Creative layouts start at Town Hall 4.'});
+  const purpose=String(req.body?.basePurpose||'AI Surprise').trim();
+  const prompt=String(req.body?.prompt||'').trim()||'Surprise me with a creative base shape.';
+  const idea=req.body?.idea&&typeof req.body.idea==='object'?req.body.idea:{};
+  try{const compiled=compileCreativeLayout(th,purpose,prompt,idea);res.json({success:true,townHall:th,generationMode:'server-layout-compiler',strategySource:'AI-blueprint-or-fallback',compilerVersion:'V14.0',layout:compiled});}
+  catch(e){res.status(500).json({error:e?.message||'Creative layout compilation failed.'});}
 });
 
 app.get('/api/coc/base-catalog-status', async (req, res) => {
@@ -620,6 +743,29 @@ app.get('/api/coc/base-catalog-status', async (req, res) => {
   } catch (e) {
     res.status(503).json({ error: e?.message || 'Base catalog unavailable.' });
   }
+});
+
+
+app.post('/api/coc/generate-creative-openlayout', async (req,res)=>{
+  const th=validTH(req.body?.townHall); if(!th)return res.status(400).json({error:'townHall must be an integer from 1 to 18.'});
+  if(th<4)return res.status(400).json({error:'Creative OpenLayout starts at Town Hall 4.'});
+  const category=String(req.body?.category||req.body?.basePurpose||'AI Surprise').trim()||'AI Surprise';
+  const prompt=String(req.body?.prompt||'').trim();
+  const idea=req.body?.idea&&typeof req.body.idea==='object'?req.body.idea:{};
+  try{
+    const entries=await loadBaseCatalog();
+    const candidates=creativeCandidatePool(entries,th,idea,prompt,category);
+    if(!candidates.length) return res.status(404).json({error:`No structurally valid community OpenLayouts are available for Town Hall ${th}.`});
+    let chosen=candidates[0], generationMode='verified-server-creative-match', model=null, providerReason='';
+    try{
+      const ai=await askAiForCreativeOpenLayout(th,category,idea,prompt,candidates);
+      chosen=candidates[ai.index]||chosen; generationMode='ai-creative-openlayout-match'; model=ai.model; providerReason=ai.reason;
+    }catch(e){ providerReason=e?.message||'AI provider unavailable'; }
+    const link=chosen.entry.link;
+    if(!validBaseLink(link,th)) return res.status(500).json({error:'Selected community OpenLayout failed structural validation.'});
+    const e=chosen.entry;
+    return res.json({success:true,townHall:th,category,idea,prompt,generationMode,strategySource:generationMode==='ai-creative-openlayout-match'?'AI':'verified-server-fallback',model,providerReason,openLayout:{id:e.id||null,name:e.name||`TH${th} Creative Layout`,type:e.type||'Home Village',link,image:e.image||null,description:e.description||'',builder:e.builder||'Community catalog',tags:Array.isArray(e.tags)?e.tags:[],added:e.added||null,verifiedStructure:true,source:'nschmeller/clash-bases community catalog'},match:{score:chosen.score,playable:true,generatedByAI:false,aiSelected:generationMode==='ai-creative-openlayout-match'},note:'This is a genuine community OpenLayout selected to match the AI concept. The AI does not fabricate or rewrite Supercell layout payloads.'});
+  }catch(e){return res.status(e?.name==='AbortError'?504:500).json({error:e?.name==='AbortError'?'Creative OpenLayout generation timed out.':(e?.message||'Creative OpenLayout generation failed.')});}
 });
 
 app.post('/api/coc/generate-base', async (req, res) => {
@@ -691,7 +837,7 @@ app.post('/api/coc/generate-base', async (req, res) => {
           : `AI selected ${baseType}. The server selected and validated a matching TH${th} community layout link.`
     });
   } catch (e) {
-    console.error('CoC V12 base generation error:', e);
+    console.error('CoC V14 base generation error:', e);
     res.status(e?.name === 'AbortError' ? 504 : 500).json({ error: e?.name === 'AbortError' ? 'Base catalog or AI provider timed out.' : (e.message || 'Unable to generate base.') });
   }
 });

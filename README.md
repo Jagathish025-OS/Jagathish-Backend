@@ -1,33 +1,53 @@
-# Jagathish Backend — CoC AI V12
+# Jagathish Backend — CoC AI V14
 
-V12 keeps the verified Army Generator and expands the Base side into an AI Creative Base Lab.
+V14 preserves the verified Army Generator and completes the creative Base pipeline through a genuine playable OpenLayout bridge.
 
-## Base endpoints
+## Creative Base flow
 
-- `GET /api/coc/base-catalog-status?townHall=10`
-- `POST /api/coc/generate-base` — verified community OpenLayout selection for War/Farm/Trophy/Hybrid.
-- `POST /api/coc/generate-base-ideas` — AI invents three creative concepts for the selected Town Hall and category.
-- `POST /api/coc/generate-base-blueprint` — turns a selected AI concept into a structured visual blueprint.
+1. Town Hall is loaded from verified ClashArmies data.
+2. AI invents three creative concepts (or uses a deterministic fallback if the provider is unavailable).
+3. The server compiles the chosen concept into a collision-checked 44×44 semantic blueprint.
+4. The server loads the community layout catalogue and structurally validates every OpenLayout candidate.
+5. AI can curate the closest existing playable community layout from a bounded candidate set.
+6. If AI matching is unavailable, deterministic semantic matching selects a verified fallback.
+7. The response contains the genuine `link.clashofclans.com/?action=OpenLayout...` URL plus source/builder/preview metadata.
 
-## AI creative categories
+## Important boundary
 
-The frontend exposes broad directions such as Fun, Character, Creature, Icon/Symbol, Shape/Pattern, Maze/Puzzle, Meme/Troll, Theme, Fantasy, Letter/Number, Abstract, Experimental, and AI Surprise.
+V14 does not fabricate or rewrite Supercell OpenLayout payloads. Public community research indicates that genuine share IDs contain a 24-byte base64url payload and additional validity constraints, and that the in-game deep-link handler is the authoritative resolver. Therefore the playable result is a genuine community-authored OpenLayout selected by AI to match the AI concept; the AI does not claim authorship of the binary payload.
 
-The AI is allowed to invent more specific sub-concepts. The server does not treat those creative blueprints as official Supercell OpenLayout exports.
+## New endpoint
 
-## Reliability model
+`POST /api/coc/generate-creative-openlayout`
 
-1. AI creates the creative concept.
-2. The server normalizes and renders a deterministic structured blueprint.
-3. The result is explicitly labelled as a creative blueprint when it is not a real OpenLayout.
-4. Community bases continue to use real catalog links and server validation.
+Input: `{ townHall, category, prompt, idea }`
 
-## Image AI
+Output includes:
+- `openLayout.link` — genuine validated OpenLayout link
+- `openLayout.image` — community preview when available
+- `openLayout.builder` — attribution
+- `generationMode` — AI match or verified fallback
+- `match.playable` — true
+- `match.generatedByAI` — false (the link itself is community-authored)
 
-V12 does not automatically generate paid images. The architecture leaves image generation as an optional next layer. If an image model is configured later, the visual concept can be generated separately from the structured layout blueprint.
+## Existing endpoints
+
+- `GET /api/coc/game-data?townHall=N`
+- `POST /api/coc/generate-army`
+- `GET /api/coc/base-catalog-status?townHall=N`
+- `POST /api/coc/generate-base`
+- `POST /api/coc/generate-base-ideas`
+- `POST /api/coc/generate-base-blueprint`
+- `POST /api/coc/compile-creative-layout`
+- `POST /api/coc/generate-creative-openlayout`
 
 ## Environment
 
 - `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL` (default `openrouter/free`, internally mapped to the configured free model)
-- Existing Supabase variables remain unchanged.
+- `OPENROUTER_MODEL` (default: `openrouter/free`)
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
+
+## Build
+
+`V14 · 2026-09-20`
