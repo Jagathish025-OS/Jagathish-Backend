@@ -9,6 +9,7 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const COC_DATA_VERSION = "clash-armies-game-data@0.12.5 (2026-09-05)";
 const COC_DATA_SOURCE = "Uploaded Clash Armies structured game-data.json5";
+const BACKEND_BUILD = "V4 · 2026-09-20";
 const COC_GAME_DATA = require("./data/coc-game-data.json");
 
 app.use(cors({
@@ -45,6 +46,7 @@ app.get("/api/status", (req, res) => {
     status: "online",
     version: "1.1",
     service: "Jagathish Backend",
+    backendBuild: BACKEND_BUILD,
     cocAI: !!process.env.OPENROUTER_API_KEY,
     cocData: COC_DATA_VERSION
   });
@@ -532,13 +534,25 @@ const armySchema = {
 };
 
 function cleanJsonText(text) {
-  if (!text) throw new Error("AI returned an empty response.");
-  try { return JSON.parse(text); } catch (_) {}
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (Array.isArray(text)) {
+    text = text
+      .map(part => {
+        if (typeof part === "string") return part;
+        if (part && typeof part.text === "string") return part.text;
+        return "";
+      })
+      .join("");
+  }
+  if (typeof text !== "string" || !text.trim()) {
+    throw new Error("AI returned an empty response.");
+  }
+  const trimmed = text.trim();
+  try { return JSON.parse(trimmed); } catch (_) {}
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced) return JSON.parse(fenced[1]);
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1));
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
   throw new Error("AI returned invalid JSON.");
 }
 
@@ -690,6 +704,26 @@ function validateArmy(output, data) {
   };
 }
 
+function buildAiData(data) {
+  return {
+    townHall: data.townHall,
+    capacities: {
+      troop: data.army.totalCapacity,
+      spell: data.spellCapacity,
+      clanCastleTroop: data.clanCastle.troopCapacity,
+      clanCastleSpell: data.clanCastle.spellCapacity,
+      clanCastleSiege: data.clanCastle.siegeMachineCapacity
+    },
+    troops: data.troops.map(x => ({ name: x.name, housingSpace: x.housingSpace })),
+    spells: data.spells.map(x => ({ name: x.name, housingSpace: x.housingSpace })),
+    ownSiegeMachines: (data.siegeMachines || []).map(x => x.name),
+    clanCastleSiegeMachines: (data.clanCastleSiegeMachines || []).map(x => x.name),
+    heroes: data.heroes.map(x => x.name),
+    pets: data.pets.map(x => x.name),
+    equipment: data.equipment.map(x => ({ name: x.name, hero: x.hero }))
+  };
+}
+
 function buildPrompt(data, preferences) {
   const pref = preferences && typeof preferences === "object" ? preferences : {};
   return [
@@ -704,7 +738,7 @@ function buildPrompt(data, preferences) {
     `Town Hall: ${data.townHall}`,
     `User preferences: ${JSON.stringify(pref)}`,
     "VERIFIED GAME DATA:",
-    JSON.stringify(data)
+    JSON.stringify(buildAiData(data))
   ].join("\n\n");
 }
 
@@ -718,20 +752,23 @@ app.post("/api/coc/generate-army", async (req, res) => {
 
   try {
     const data = getCocSnapshot(th);
-    const body = {
+    const messages = [
+      {
+        role: "system",
+        content: "Return only the requested JSON object. Never invent facts outside the provided verified game data."
+      },
+      {
+        role: "user",
+        content: buildPrompt(data, req.body?.preferences)
+      }
+    ];
+
+    const structuredBody = {
       model: OPENROUTER_MODEL,
-      temperature: 0.35,
-      max_tokens: 2500,
-      messages: [
-        {
-          role: "system",
-          content: "Return only the requested JSON object. Never invent facts outside the provided verified game data."
-        },
-        {
-          role: "user",
-          content: buildPrompt(data, req.body?.preferences)
-        }
-      ],
+      temperature: 0.2,
+      max_tokens: 4000,
+      reasoning: { effort: "none" },
+      messages,
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -742,30 +779,82 @@ app.post("/api/coc/generate-army", async (req, res) => {
       }
     };
 
-    const response = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://jagathish.online",
-        "X-OpenRouter-Title": "Jagathish CoC AI"
-      },
-      body: JSON.stringify(body)
-    });
+    async function callOpenRouter(body, label) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 45000);
+      try {
+        const response = await fetch(OPENROUTER_URL, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://jagathish.online",
+            "X-Title": "Jagathish CoC AI"
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
 
-    const raw = await response.text();
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+        const raw = await response.text();
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
 
-    if (!response.ok) {
-      console.error("OpenRouter error:", response.status, raw.slice(0, 1000));
+        console.log(
+          `OpenRouter ${label}: status=${response.status}, model=${parsed?.model || "unknown"}, ` +
+          `finish=${parsed?.choices?.[0]?.finish_reason || "unknown"}, ` +
+          `contentLength=${typeof parsed?.choices?.[0]?.message?.content === "string" ? parsed.choices[0].message.content.length : 0}`
+        );
+
+        if (!response.ok) {
+          console.error("OpenRouter error:", response.status, raw.slice(0, 1200));
+          throw new Error(`AI provider request failed (${response.status}).`);
+        }
+
+        return parsed;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    let parsed = await callOpenRouter(structuredBody, "structured");
+    let content = parsed?.choices?.[0]?.message?.content;
+
+    // Some routed reasoning models can consume the completion budget without
+    // emitting final content. Retry once with plain JSON instructions and no
+    // response_format so the router can select another compatible free model.
+    if (!content || (typeof content === "string" && !content.trim())) {
+      console.warn("OpenRouter returned empty final content; retrying with plain JSON mode.");
+      const retryBody = {
+        model: OPENROUTER_MODEL,
+        temperature: 0.2,
+        max_tokens: 5000,
+        reasoning: { effort: "none" },
+        messages: [
+          ...messages,
+          {
+            role: "user",
+            content: "IMPORTANT: Output the complete JSON object now. Do not explain anything. Do not use markdown fences."
+          }
+        ]
+      };
+      parsed = await callOpenRouter(retryBody, "plain-json-retry");
+      content = parsed?.choices?.[0]?.message?.content;
+    }
+
+    if (!content || (typeof content === "string" && !content.trim())) {
+      const finishReason = parsed?.choices?.[0]?.finish_reason || "unknown";
+      console.error("OpenRouter returned no final content after retry:", JSON.stringify({
+        model: parsed?.model,
+        finishReason,
+        usage: parsed?.usage || null
+      }));
       return res.status(502).json({
-        error: "AI provider request failed.",
-        providerStatus: response.status
+        error: "AI provider returned no final answer. Please try Generate Army again.",
+        providerStatus: 200,
+        finishReason
       });
     }
 
-    const content = parsed?.choices?.[0]?.message?.content;
     const aiOutput = cleanJsonText(content);
     const validation = validateArmy(aiOutput, data);
 
@@ -788,7 +877,12 @@ app.post("/api/coc/generate-army", async (req, res) => {
     });
   } catch (err) {
     console.error("CoC AI generation error:", err);
-    res.status(500).json({ error: err.message || "Unable to generate army." });
+    const isTimeout = err?.name === "AbortError";
+    res.status(isTimeout ? 504 : 502).json({
+      error: isTimeout
+        ? "AI provider timed out. Please try Generate Army again."
+        : (err.message || "Unable to generate army.")
+    });
   }
 });
 
