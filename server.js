@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V7 · 2026-09-20";
+const BACKEND_BUILD = "V8 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -197,6 +197,51 @@ function buildStrategyArmy(th,data,strategy){
   const equipment=[]; for(const h of heroes){const eq=data.equipment.filter(e=>e.hero===h).slice(0,2); for(const e of eq)equipment.push({hero:h,equipment:e.name});}
   return {army:{troops:army,spells:spellPlan,siegeMachine,clanCastleTroops:cc,clanCastleSpells:ccSpell,heroes,pets,equipment},strategy,summary:`${strategy} strategy built from ClashArmies verified Town Hall ${th} rules.`,attackGuide:buildGuide(strategy)};
 }
+function generateArmyLink(army){
+  const buildUnitStr=(list)=>normalizeCountList(list||[]).map(item=>{
+    const u=COC_GAME_DATA.troops.concat(COC_GAME_DATA.sieges).find(x=>x.name===item.name);
+    if(!u || !Number.isInteger(Number(u.clashId))) return null;
+    return `${Math.max(0,Number(item.count)||0)}x${Number(u.clashId)}`;
+  }).filter(Boolean).join('-');
+  const buildSpellStr=(list)=>normalizeCountList(list||[]).map(item=>{
+    const s=COC_GAME_DATA.spells.find(x=>x.name===item.name);
+    if(!s || !Number.isInteger(Number(s.clashId))) return null;
+    return `${Math.max(0,Number(item.count)||0)}x${Number(s.clashId)}`;
+  }).filter(Boolean).join('-');
+  const heroes={};
+  for(const eq of Array.isArray(army.equipment)?army.equipment:[]){
+    const h=String(eq.hero||''); if(!h) continue;
+    if(!heroes[h]) heroes[h]={};
+    const item=COC_GAME_DATA.equipment.find(x=>x.name===eq.equipment && x.hero===h);
+    if(!item) continue;
+    if(!heroes[h].eq1) heroes[h].eq1=item; else if(!heroes[h].eq2) heroes[h].eq2=item;
+  }
+  for(const pet of Array.isArray(army.pets)?army.pets:[]){
+    const h=String(pet.hero||''); if(!h || !heroes[h]) heroes[h]={...(heroes[h]||{})};
+    const item=COC_GAME_DATA.pets.find(x=>x.name===pet.pet);
+    if(item && !heroes[h].pet) heroes[h].pet=item;
+  }
+  const parts=[];
+  const heroParts=Object.entries(heroes).map(([name,h])=>{
+    const hero=COC_GAME_DATA.heroes.find(x=>x.name===name);
+    if(!hero || !Number.isInteger(Number(hero.clashId))) return null;
+    let out=String(hero.clashId);
+    if(h.pet && Number.isInteger(Number(h.pet.clashId))) out+=`p${Number(h.pet.clashId)}`;
+    if(h.eq1 || h.eq2){
+      const first=h.eq1||h.eq2; const second=first===h.eq1?h.eq2:h.eq1;
+      if(first && Number.isInteger(Number(first.clashId))) out+=`e${Number(first.clashId)}`;
+      if(second && Number.isInteger(Number(second.clashId))) out+=`_${Number(second.clashId)}`;
+    }
+    return out;
+  }).filter(Boolean).join('-');
+  if(heroParts) parts.push(`h${heroParts}`);
+  const ccTroops=buildUnitStr(army.clanCastleTroops); if(ccTroops) parts.push(`i${ccTroops}`);
+  const ccSpells=buildSpellStr(army.clanCastleSpells); if(ccSpells) parts.push(`d${ccSpells}`);
+  const troops=buildUnitStr(army.troops); if(troops) parts.push(`u${troops}`);
+  const spells=buildSpellStr(army.spells); if(spells) parts.push(`s${spells}`);
+  return parts.length ? `https://link.clashofclans.com/?action=CopyArmy&army=${parts.join('')}` : null;
+}
+
 function buildGuide(strategy){const guides={
   'dragon':['Funnel both sides with a few support troops.','Deploy Dragons in a line toward the core.','Use Balloons to target key defenses and support the Dragons.','Use spells to keep the main air push moving through the core.'],
   'giant-healer':['Create a funnel on both sides.','Deploy Giants as the tank line.','Use Healers behind the Giants and Wall Breakers to open compartments.','Deploy Wizards behind the tank line for damage.'],
@@ -227,7 +272,9 @@ app.post("/api/coc/generate-army",async(req,res)=>{
     const built=buildStrategyArmy(th,data,strategy);
     const validation=validateFinalArmy(built.army,data);
     if(!validation.ok)return res.status(500).json({error:'Server strategy builder failed validation.',validationErrors:validation.errors});
-    res.json({success:true,townHall:th,dataVersion:COC_DATA_VERSION,model,generationMode,repairApplied:false,strategy,army:built.army,attackGuide:built.attackGuide,summary:providerReason?`AI strategy provider was unavailable (${providerReason}). A deterministic ${strategy} army was generated from verified ClashArmies data.`:built.summary,totals:validation.totals});
+    const armyLink=generateArmyLink(built.army);
+    const strategySource=generationMode==='ai-strategy'?'AI':'verified-server-fallback';
+    res.json({success:true,townHall:th,dataVersion:COC_DATA_VERSION,model,generationMode,strategySource,providerReason,repairApplied:false,strategy,army:built.army,armyLink,attackGuide:built.attackGuide,summary:providerReason?`AI strategy provider was unavailable (${providerReason}). A deterministic ${strategy} army was generated from verified ClashArmies data.`:built.summary,totals:validation.totals});
   }catch(e){console.error('CoC V7 generation error:',e);res.status(e?.name==='AbortError'?504:500).json({error:e?.name==='AbortError'?'AI provider timed out; a verified fallback should be used on the next request.':e.message||'Unable to generate army.'});}
 });
 

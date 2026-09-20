@@ -1,42 +1,22 @@
-# Jagathish Backend — CoC AI V7
+# Jagathish Backend — CoC AI V8
 
-## What changed
+V8 keeps the ClashArmies-based verified game-data and deterministic strategy engine from V7, and adds:
 
-V7 replaces AI-generated armies with a safer two-layer architecture:
+- AI used only as a strategy selector, never as the authority for exact troop counts.
+- Automatic deterministic fallback when OpenRouter is unavailable or rate-limited.
+- Exact server-side capacity and unlock validation.
+- Generated Clash of Clans Army Link using the same section format used by the ClashArmies source (`h`, `i`, `d`, `u`, `s`).
+- Response metadata distinguishing `ai-strategy` from `verified-server-strategy`.
 
-1. **ClashArmies source data** is imported from `clash-armies-master/game-data.json5`.
-2. **ClashArmies unlock rules** are implemented server-side for Town Hall, production buildings, Laboratory, Clan Castle donation rules, heroes, pets and equipment.
-3. The AI is asked only to choose an **attack strategy**. It is not trusted to calculate troop counts or legality.
-4. The server builds the actual army using exact housing-space and Town Hall capacities.
-5. The final army is validated again before it is returned.
-6. If OpenRouter returns 400/429, times out, or produces malformed strategy JSON, the server automatically selects a deterministic strategy and still returns a verified army.
+## Endpoints
 
-## Important
+- `GET /api/coc/game-data?townHall=8`
+- `POST /api/coc/generate-army` with `{ "townHall": 8 }`
 
-The game data is community/fan-maintained ClashArmies data, not the official Supercell API.
+The generation response includes `armyLink` when the generated army has shareable content.
 
-## Existing API
+## Environment
 
-- `GET /api/coc/game-data?townHall=5`
-- `GET /api/coc/data-source`
-- `POST /api/coc/generate-army`
-
-Example generation request:
-
-```json
-{"townHall":5}
-```
-
-The response includes `generationMode`:
-
-- `ai-strategy` when OpenRouter successfully selected the strategy.
-- `verified-server-strategy` when the AI provider was unavailable and the server selected the strategy.
-
-Both modes use the same server-side verified army builder and validator.
-
-## Environment variables
-
-- `SUPABASE_URL`
-- `SUPABASE_KEY`
-- `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL` (optional; `openrouter/free` is internally mapped to a known free JSON-capable model)
+- `OPENROUTER_API_KEY` — optional for AI strategy selection. The server still generates a verified army without it.
+- `OPENROUTER_MODEL` — defaults to `openrouter/free`; the server resolves that to a free strategy-selector model.
+- Existing Supabase variables remain unchanged.
