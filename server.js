@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V9.1 · 2026-09-20";
+const BACKEND_BUILD = "V10 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -342,6 +342,16 @@ function chooseBaseFallback(th, typeCounts) {
   return preferred.find(x => Number(typeCounts[x] || 0) > 0) || Object.keys(typeCounts)[0] || 'Home Village';
 }
 
+function normalizeRequestedBasePurpose(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'war') return 'War';
+  if (['farm', 'farming', 'loot', 'loot/farming'].includes(v)) return 'Farm';
+  if (v === 'trophy' || v === 'trophy push') return 'Trophy';
+  if (v === 'hybrid') return 'Hybrid';
+  if (v === 'home village' || v === 'general') return 'Home Village';
+  return null;
+}
+
 async function askAiForBaseType(th, typeCounts) {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is not configured.');
   const available = Object.entries(typeCounts).map(([k,v]) => `${k}:${v}`).join(', ');
@@ -404,22 +414,40 @@ app.post('/api/coc/generate-base', async (req, res) => {
     const typeCounts = baseTypesFor(entries, th);
     if (!Object.keys(typeCounts).length) return res.status(404).json({ error: `No community base layouts are available for Town Hall ${th}.` });
 
+    const requestedBasePurpose = normalizeRequestedBasePurpose(req.body?.basePurpose);
     let baseType, model = OPENROUTER_MODEL, generationMode = 'ai-base-type', providerReason = '';
-    try {
-      const ai = await askAiForBaseType(th, typeCounts);
-      baseType = ai.baseType;
-      model = ai.model;
-    } catch (e) {
-      providerReason = e?.message || 'AI provider unavailable';
-      baseType = chooseBaseFallback(th, typeCounts);
-      generationMode = 'verified-server-base-fallback';
-      console.warn('AI base selector unavailable; using deterministic base type:', providerReason);
+
+    if (req.body?.basePurpose !== undefined && !requestedBasePurpose) {
+      return res.status(400).json({ error: 'Invalid base purpose. Use War, Farm, Trophy, Hybrid, or Home Village.' });
+    }
+
+    if (requestedBasePurpose) {
+      if (!Object.prototype.hasOwnProperty.call(typeCounts, requestedBasePurpose)) {
+        return res.status(404).json({
+          error: `No ${requestedBasePurpose === 'Farm' ? 'Farming / Loot' : requestedBasePurpose} community base layouts are available for Town Hall ${th}.`,
+          availablePurposes: Object.keys(typeCounts)
+        });
+      }
+      baseType = requestedBasePurpose;
+      generationMode = 'requested-base-purpose';
+      providerReason = '';
+    } else {
+      try {
+        const ai = await askAiForBaseType(th, typeCounts);
+        baseType = ai.baseType;
+        model = ai.model;
+      } catch (e) {
+        providerReason = e?.message || 'AI provider unavailable';
+        baseType = chooseBaseFallback(th, typeCounts);
+        generationMode = 'verified-server-base-fallback';
+        console.warn('AI base selector unavailable; using deterministic base type:', providerReason);
+      }
     }
 
     const selected = selectBase(entries, th, baseType);
     if (!validBaseLink(selected.link, th)) return res.status(500).json({ error: 'Selected base link failed server validation.' });
 
-    const strategySource = generationMode === 'ai-base-type' ? 'AI' : 'verified-server-fallback';
+    const strategySource = generationMode === 'ai-base-type' ? 'AI' : generationMode === 'requested-base-purpose' ? 'requested-purpose' : 'verified-server-fallback';
     res.json({
       success: true,
       townHall: th,
@@ -439,12 +467,14 @@ app.post('/api/coc/generate-base', async (req, res) => {
         added: selected.added || null
       },
       source: 'Community layout catalog · structurally validated Supercell OpenLayout link',
-      summary: providerReason
-        ? `AI base selector was unavailable (${providerReason}). A verified ${baseType} community layout was selected for TH${th}.`
-        : `AI selected ${baseType}. The server selected and validated a matching TH${th} community layout link.`
+      summary: generationMode === 'requested-base-purpose'
+        ? `A verified ${baseType} community layout was selected for TH${th} from the requested base purpose.`
+        : providerReason
+          ? `AI base selector was unavailable (${providerReason}). A verified ${baseType} community layout was selected for TH${th}.`
+          : `AI selected ${baseType}. The server selected and validated a matching TH${th} community layout link.`
     });
   } catch (e) {
-    console.error('CoC V9 base generation error:', e);
+    console.error('CoC V10 base generation error:', e);
     res.status(e?.name === 'AbortError' ? 504 : 500).json({ error: e?.name === 'AbortError' ? 'Base catalog or AI provider timed out.' : (e.message || 'Unable to generate base.') });
   }
 });
