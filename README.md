@@ -13,9 +13,9 @@ This version keeps the existing Supabase API and adds a Clash of Clans AI backen
 - `POST /api/coc/generate-army` with JSON body:
   `{"townHall":10}`
 
-The server uses `clash-of-clans-data@0.16.0` as the structured game-data source, sends only verified Town Hall data to OpenRouter, and validates the AI result against troop/spell/Clan Castle capacities and unlocks before returning it.
+The server uses the bundled `data/coc-game-data.json` structured dataset, sends only verified Town Hall data to OpenRouter, and validates the AI result against troop/spell/Clan Castle capacities and unlocks before returning it.
 
-The game-data package is community-maintained and sourced from the Clash of Clans Wiki; it is not an official Supercell API.
+The bundled game-data is a fan-maintained structured dataset and is not an official Supercell API.
 
 ## Deployment
 

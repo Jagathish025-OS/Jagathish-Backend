@@ -343,6 +343,14 @@ function getCocSnapshot(th) {
   const troops = getAvailableTroops(th);
   const spells = getAvailableSpells(th);
   const siegeMachines = getAvailableOwnSiegeMachines(th);
+  // A Clan Castle siege machine is donated by another player, so the
+  // recipient does not need their own Siege Workshop.
+  const clanCastleSiegeMachines = Number(townHall.ccSiegeCapacity || 0) > 0
+    ? COC_GAME_DATA.sieges
+        .filter(siege => !siege.isSuper)
+        .map(siege => summarizeEntity(siege, th, "siege", null, townHall.maxLaboratory))
+        .filter(Boolean)
+    : [];
   const heroes = getHeroData(th);
   const pets = getAvailablePets(th);
   const equipment = getAvailableEquipment(th);
@@ -377,10 +385,12 @@ function getCocSnapshot(th) {
     troops,
     spells,
     siegeMachines,
+    clanCastleSiegeMachines,
     counts: {
       availableTroops: troops.length,
       availableSpells: spells.length,
       availableOwnSiegeMachines: siegeMachines.length,
+      availableClanCastleSiegeMachines: clanCastleSiegeMachines.length,
       availableHeroes: heroes.length,
       availablePets: pets.length,
       availableEquipment: equipment.length
@@ -595,8 +605,11 @@ function validateArmy(output, data) {
   }
 
   if (army.siegeMachine) {
-    const siege = findByName(data.siegeMachines, army.siegeMachine);
-    if (!siege) errors.push(`Unknown or locked siege machine: ${army.siegeMachine}`);
+    const siege = findByName(
+      data.clanCastleSiegeMachines || data.siegeMachines,
+      army.siegeMachine
+    );
+    if (!siege) errors.push(`Unknown or unavailable siege machine: ${army.siegeMachine}`);
     if (data.clanCastle.siegeMachineCapacity < 1) {
       errors.push("Clan Castle does not have siege machine capacity at this Town Hall.");
     }
