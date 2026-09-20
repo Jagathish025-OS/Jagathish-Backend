@@ -14,7 +14,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies-game-data@0.12.5 (2026-09-05)";
 const COC_DATA_SOURCE = "Uploaded Clash Armies structured game-data.json5";
-const BACKEND_BUILD = "V5 · 2026-09-20";
+const BACKEND_BUILD = "V6 · 2026-09-20";
 const COC_GAME_DATA = require("./data/coc-game-data.json");
 
 app.use(cors({
@@ -889,6 +889,36 @@ function repairArmyCandidate(output, data) {
   };
 }
 
+
+function buildServerFallback(data, townHall, reason) {
+  const repaired = repairArmyCandidate({}, data);
+  const validation = validateArmy(repaired, data);
+
+  if (!validation.ok) {
+    throw new Error(
+      `Server fallback could not construct a valid army: ${validation.errors.join(" ")}`
+    );
+  }
+
+  return {
+    success: true,
+    townHall,
+    dataVersion: COC_DATA_VERSION,
+    model: "server-fallback",
+    generationMode: "verified-server-fallback",
+    repairApplied: true,
+    army: validation.normalized,
+    attackGuide: [
+      "This army was constructed from the verified Town Hall data because the AI provider was unavailable.",
+      "Use the listed troops and spells within the displayed capacity limits."
+    ],
+    summary: reason
+      ? `AI provider was unavailable (${reason}). A verified server fallback army was generated instead.`
+      : "A verified server fallback army was generated.",
+    totals: validation.totals
+  };
+}
+
 app.post("/api/coc/generate-army", async (req, res) => {
   if (!process.env.OPENROUTER_API_KEY) {
     return res.status(503).json({ error: "OPENROUTER_API_KEY is not configured on the backend." });
@@ -958,35 +988,47 @@ app.post("/api/coc/generate-army", async (req, res) => {
       response_format: { type: "json_object" }
     };
 
-    let parsed = await callOpenRouter(requestBody, "json-object");
-    let content = parsed?.choices?.[0]?.message?.content;
+    let parsed = null;
     let aiOutput = null;
+    let providerFallbackReason = "";
 
     try {
-      aiOutput = cleanJsonText(content);
-    } catch (firstParseError) {
-      console.warn("First AI JSON parse failed; retrying with explicit JSON-only instruction.");
-      const retryBody = {
-        model: OPENROUTER_MODEL,
-        temperature: 0.1,
-        max_tokens: 6000,
-        reasoning: { effort: "none" },
-        messages: [
-          ...messages,
-          {
-            role: "user",
-            content: "Output the complete JSON object now. No markdown. No comments. Ensure every array and object is closed and the JSON parses."
-          }
-        ],
-        response_format: { type: "json_object" }
-      };
-      parsed = await callOpenRouter(retryBody, "json-retry");
-      content = parsed?.choices?.[0]?.message?.content;
+      parsed = await callOpenRouter(requestBody, "json-object");
+      let content = parsed?.choices?.[0]?.message?.content;
+
       try {
         aiOutput = cleanJsonText(content);
-      } catch (secondParseError) {
-        console.warn("Second AI JSON parse failed; using verified server fallback.");
+      } catch (firstParseError) {
+        console.warn("First AI JSON parse failed; retrying with explicit JSON-only instruction.");
+        const retryBody = {
+          model: OPENROUTER_MODEL,
+          temperature: 0.1,
+          max_tokens: 6000,
+          reasoning: { effort: "none" },
+          messages: [
+            ...messages,
+            {
+              role: "user",
+              content: "Output the complete JSON object now. No markdown. No comments. Ensure every array and object is closed and the JSON parses."
+            }
+          ],
+          response_format: { type: "json_object" }
+        };
+
+        try {
+          parsed = await callOpenRouter(retryBody, "json-retry");
+          content = parsed?.choices?.[0]?.message?.content;
+          aiOutput = cleanJsonText(content);
+        } catch (retryError) {
+          providerFallbackReason = retryError?.message || "invalid AI JSON response";
+          console.warn("AI JSON retry failed; using verified server fallback.");
+          aiOutput = null;
+        }
       }
+    } catch (providerError) {
+      providerFallbackReason = providerError?.message || "AI provider unavailable";
+      console.warn("AI provider unavailable; using verified server fallback:", providerFallbackReason);
+      aiOutput = null;
     }
 
     // AI is responsible for strategy; the server is responsible for legality.
@@ -1010,12 +1052,15 @@ app.post("/api/coc/generate-army", async (req, res) => {
       townHall: th,
       dataVersion: COC_DATA_VERSION,
       model: parsed?.model || OPENROUTER_MODEL,
-      repairApplied: repairedChanged,
+      generationMode: providerFallbackReason ? "verified-server-fallback" : "ai-normalized",
+      repairApplied: repairedChanged || !!providerFallbackReason,
       army: validation.normalized,
       attackGuide: repaired.attackGuide,
-      summary: repairedChanged
-        ? `${repaired.summary} Server normalization was applied to keep every item within verified Town Hall limits.`
-        : repaired.summary,
+      summary: providerFallbackReason
+        ? `AI provider was unavailable (${providerFallbackReason}). A verified server fallback army was generated instead.`
+        : (repairedChanged
+          ? `${repaired.summary} Server normalization was applied to keep every item within verified Town Hall limits.`
+          : repaired.summary),
       totals: validation.totals
     });
   } catch (err) {
