@@ -12,7 +12,7 @@ const OPENROUTER_MODEL = CONFIGURED_OPENROUTER_MODEL === "openrouter/free"
   : CONFIGURED_OPENROUTER_MODEL;
 const COC_DATA_VERSION = "clash-armies@0.12.5 source game-data.json5 (2026-09-20)";
 const COC_DATA_SOURCE = "clash-armies-master/game-data.json5 + ClashArmies unlock rules";
-const BACKEND_BUILD = "V15 · 2026-09-20";
+const BACKEND_BUILD = "V16 · 2026-09-20";
 
 app.use(cors({ origin: true, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Content-Type"] }));
 app.use(express.json({ limit: "256kb" }));
@@ -291,7 +291,7 @@ function validateFinalArmy(army,data){const errors=[]; const troops=normalizeCou
 
 
 
-// ---------------- AI BASE GENERATOR V14 ----------------
+// ---------------- AI BASE GENERATOR V16 ----------------
 // Base layouts are community-shared deep links. We do not synthesize or alter layout payloads;
 // the server selects a verified catalog entry matching the requested Town Hall and validates
 // its Supercell share-link structure before returning it.
@@ -703,33 +703,82 @@ function layoutThemeMask(theme, x, y, n=44) {
 }
 
 const CREATIVE_FOOTPRINTS={
-  town_hall:[4,4,'core'], defense:[2,2,'defense'], wall:[1,1,'wall'], resource:[3,3,'resource'], support:[3,3,'support'], trap:[1,1,'trap'], decor:[2,2,'decor']
+  town_hall:[4,4,'core'], defense:[3,3,'defense'], wall:[1,1,'wall'], resource:[3,3,'resource'], support:[3,3,'support'], trap:[1,1,'trap'], decor:[2,2,'decor']
 };
+
+// Approximate TH-specific object inventory used only for the visual/semantic compiler.
+// It deliberately does not claim to be a Supercell-exportable payload.
+const CREATIVE_BUILDING_LIBRARY={
+  4:[['cannon',2,3,3,'🛡️'],['archer_tower',2,3,3,'🏹'],['mortar',1,3,3,'💥'],['air_defense',1,3,3,'🛩️'],['wizard_tower',1,3,3,'🧙'],['cannon',1,3,3,'🛡️']],
+  5:[['cannon',3,3,3,'🛡️'],['archer_tower',3,3,3,'🏹'],['mortar',1,3,3,'💥'],['air_defense',2,3,3,'🛩️'],['wizard_tower',2,3,3,'🧙'],['air_sweeper',1,2,2,'🌪️']],
+  6:[['cannon',3,3,3,'🛡️'],['archer_tower',4,3,3,'🏹'],['mortar',2,3,3,'💥'],['air_defense',2,3,3,'🛩️'],['wizard_tower',2,3,3,'🧙'],['air_sweeper',1,2,2,'🌪️']],
+  7:[['cannon',5,3,3,'🛡️'],['archer_tower',4,3,3,'🏹'],['mortar',3,3,3,'💥'],['air_defense',2,3,3,'🛩️'],['wizard_tower',3,3,3,'🧙'],['air_sweeper',1,2,2,'🌪️'],['hidden_tesla',2,2,2,'⚡']],
+  8:[['cannon',5,3,3,'🛡️'],['archer_tower',5,3,3,'🏹'],['mortar',3,3,3,'💥'],['air_defense',3,3,3,'🛩️'],['wizard_tower',3,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',3,2,2,'⚡']],
+  9:[['cannon',5,3,3,'🛡️'],['archer_tower',6,3,3,'🏹'],['mortar',3,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',4,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',4,2,2,'⚡'],['x_bow',3,3,3,'🏹']],
+  10:[['cannon',6,3,3,'🛡️'],['archer_tower',7,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',4,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',4,2,2,'⚡'],['x_bow',3,3,3,'🎯'],['inferno_tower',2,3,3,'🔥']],
+  11:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',4,2,2,'⚡'],['x_bow',4,3,3,'🎯'],['inferno_tower',2,3,3,'🔥'],['eagle_artillery',1,4,4,'🦅']],
+  12:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',5,2,2,'⚡'],['x_bow',5,3,3,'🎯'],['inferno_tower',3,3,3,'🔥'],['bomb_tower',2,3,3,'💣'],['eagle_artillery',1,4,4,'🦅']],
+  13:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',5,2,2,'⚡'],['x_bow',5,3,3,'🎯'],['inferno_tower',3,3,3,'🔥'],['bomb_tower',3,3,3,'💣'],['scattershot',2,3,3,'🪨'],['eagle_artillery',1,4,4,'🦅']],
+  14:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',5,2,2,'⚡'],['x_bow',5,3,3,'🎯'],['inferno_tower',4,3,3,'🔥'],['bomb_tower',3,3,3,'💣'],['scattershot',2,3,3,'🪨'],['eagle_artillery',1,4,4,'🦅']],
+  15:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',5,2,2,'⚡'],['x_bow',5,3,3,'🎯'],['inferno_tower',4,3,3,'🔥'],['bomb_tower',3,3,3,'💣'],['scattershot',2,3,3,'🪨'],['eagle_artillery',1,4,4,'🦅'],['monolith',1,3,3,'⬛']],
+  16:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',5,2,2,'⚡'],['x_bow',5,3,3,'🎯'],['inferno_tower',4,3,3,'🔥'],['bomb_tower',3,3,3,'💣'],['scattershot',2,3,3,'🪨'],['eagle_artillery',1,4,4,'🦅'],['monolith',1,3,3,'⬛']],
+  17:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',5,2,2,'⚡'],['x_bow',5,3,3,'🎯'],['inferno_tower',4,3,3,'🔥'],['bomb_tower',3,3,3,'💣'],['scattershot',2,3,3,'🪨'],['eagle_artillery',1,4,4,'🦅'],['monolith',1,3,3,'⬛'],['spell_tower',2,2,2,'✨']],
+  18:[['cannon',7,3,3,'🛡️'],['archer_tower',8,3,3,'🏹'],['mortar',4,3,3,'💥'],['air_defense',4,3,3,'🛩️'],['wizard_tower',5,3,3,'🧙'],['air_sweeper',2,2,2,'🌪️'],['hidden_tesla',5,2,2,'⚡'],['x_bow',5,3,3,'🎯'],['inferno_tower',4,3,3,'🔥'],['bomb_tower',3,3,3,'💣'],['scattershot',2,3,3,'🪨'],['eagle_artillery',1,4,4,'🦅'],['monolith',1,3,3,'⬛'],['spell_tower',2,2,2,'✨']]
+};
+function buildingInventory(th){return CREATIVE_BUILDING_LIBRARY[Math.max(4,Math.min(18,th))] || CREATIVE_BUILDING_LIBRARY[10];}
+function spiralPoints(cx,cy,r,count){const pts=[];for(let i=0;i<count;i++){const a=(Math.PI*2*i/count)-Math.PI/2;pts.push([Math.round(cx+Math.cos(a)*r),Math.round(cy+Math.sin(a)*r)]);}return pts;}
+function objectLabel(id){return String(id).replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());}
+
 function rectCells(p){const out=[];for(let yy=p.y;yy<p.y+p.h;yy++)for(let xx=p.x;xx<p.x+p.w;xx++)out.push(`${xx},${yy}`);return out;}
 function canPlace(p,occupied,n){if(p.x<1||p.y<1||p.x+p.w>n-1||p.y+p.h>n-1)return false;return rectCells(p).every(k=>!occupied.has(k));}
 function addPlacement(list,occupied,p){if(!canPlace(p,occupied,44))return false;list.push(p);rectCells(p).forEach(k=>occupied.add(k));return true;}
 function mirrorPoint(x,y,n,mode){if(mode==='horizontal')return [n-1-x,y];if(mode==='vertical')return [x,n-1-y];return [n-1-x,n-1-y];}
 function perimeterCandidates(theme,n){const pts=[];for(let y=3;y<n-3;y+=2)for(let x=3;x<n-3;x+=2){const inside=layoutThemeMask(theme,x,y,n), near=!layoutThemeMask(theme,Math.min(n-1,x+3),y,n)||!layoutThemeMask(theme,x,Math.min(n-1,y+3),n);if(inside&&near)pts.push([x,y]);}return pts;}
 function compileCreativeLayout(th,purpose,prompt,idea={}){
-  const theme=creativeThemeFromPrompt(prompt,idea.visualPattern||idea.icon); const n=44; const cx=22,cy=22; const placements=[]; const occupied=new Set(); const symmetry=idea.symmetry||'medium';
-  addPlacement(placements,occupied,{id:'town_hall',x:20,y:20,w:4,h:4,category:'core'});
-  const coreStyle=idea.coreStyle||'compact';
-  const defenseSpots=coreStyle==='ring'?[[14,20],[24,14],[30,20],[24,28],[14,28],[20,14],[28,24],[20,28]]:[[12,20],[20,12],[28,20],[20,28],[14,14],[26,14],[26,26],[14,26]];
-  const defenseIds=['inferno_tower','x_bow','air_defense','wizard_tower','archer_tower','cannon','mortar','air_sweeper'];
-  let di=0;
-  for(const [x,y] of defenseSpots){const p={id:defenseIds[di++%defenseIds.length],x,y,w:2,h:2,category:'defense'}; if(addPlacement(placements,occupied,p)&&symmetry==='high'){const [mx,my]=mirrorPoint(x,y,n,'both');addPlacement(placements,occupied,{...p,x:mx,y:my,id:defenseIds[di++%defenseIds.length]});}}
-  const mask=[];for(let y=2;y<n-2;y++)for(let x=2;x<n-2;x++)if(layoutThemeMask(theme,x,y,n))mask.push([x,y]);
-  const wallDensity=Math.max(.18,Math.min(.55,Number(idea.density)||.24));
-  let step=Math.max(2,Math.round(1/wallDensity*2));
-  for(let i=0;i<mask.length;i+=step){const [x,y]=mask[i];if(Math.abs(x-cx)<5&&Math.abs(y-cy)<5)continue;addPlacement(placements,occupied,{id:'wall',x,y,w:1,h:1,category:'wall'});if(placements.length>260)break;}
-  // Add a second defensive/support layer around the concept boundary.
-  const perimeter=perimeterCandidates(theme,n); let pi=0;
-  while(pi<perimeter.length&&placements.length<105){const [x,y]=perimeter[pi++];const p={id:pi%3===0?'resource':'support',x,y,w:3,h:3,category:pi%3===0?'resource':'support'};addPlacement(placements,occupied,p);}
-  // Place trap markers in open boundary gaps. These are blueprint semantics, not a game export.
-  let traps=0;for(const [x,y] of perimeter){if(traps>=12)break;const p={id:'trap',x,y,w:1,h:1,category:'trap'};if(addPlacement(placements,occupied,p))traps++;}
-  const issues=[]; if(!placements.some(p=>p.id==='town_hall'))issues.push('Town Hall missing');
-  const out={townHall:th,purpose,theme,prompt,idea,gridSize:n,coordinateSystem:'44x44 blueprint grid',placements,metrics:{placedObjects:placements.length,walls:placements.filter(p=>p.category==='wall').length,defenses:placements.filter(p=>p.category==='defense').length,support:placements.filter(p=>p.category==='support'||p.category==='resource').length,traps:placements.filter(p=>p.category==='trap').length,symmetry},validation:{ok:issues.length===0,level:'geometry-and-collision',issues},export:{format:'jagathish-coc-blueprint-v1',playableOpenLayout:false,reason:'Supercell OpenLayout payloads are game-generated and not publicly authorable from arbitrary coordinates.'},note:'AI concept compiled into a collision-checked 44×44 semantic blueprint. It is not an official OpenLayout payload.'};
-  return out;
+  const theme=creativeThemeFromPrompt(prompt,idea.visualPattern||idea.icon); const n=44; const cx=22,cy=22;
+  const placements=[]; const occupied=new Set(); const symmetry=idea.symmetry||'medium';
+  const addObj=(id,x,y,w,h,category,extra={})=>addPlacement(placements,occupied,{id,x,y,w,h,category,...extra});
+  addObj('town_hall',20,20,4,4,'core',{label:'Town Hall',icon:'🏰'});
+  addObj('clan_castle',17,21,3,3,'support',{label:'Clan Castle',icon:'🏯'});
+  const inv=buildingInventory(th);
+  const defenseSpots=coreStyleSpots(idea.coreStyle||'compact',theme,n);
+  let spotIndex=0;
+  for(const spec of inv){
+    const [id,count,w,h,icon]=spec;
+    if(id==='town_hall')continue;
+    const positions=[];
+    for(let i=0;i<count;i++){
+      const ring=8+Math.floor((i+spotIndex)%3)*5;
+      const pts=spiralPoints(cx,cy,ring,Math.max(count,8));
+      positions.push(pts[i%pts.length]);
+    }
+    for(const [x,y] of positions){
+      const xx=Math.max(2,Math.min(n-w-2,x-Math.floor(w/2))); const yy=Math.max(2,Math.min(n-h-2,y-Math.floor(h/2)));
+      addObj(id,xx,yy,w,h,'defense',{label:objectLabel(id),icon});
+      if(symmetry==='high' && placements.length<180){
+        const [mx,my]=mirrorPoint(xx,yy,n,'both'); addObj(id,mx,my,w,h,'defense',{label:objectLabel(id),icon});
+      }
+    }
+    spotIndex++;
+  }
+  // Concept walls follow the AI-selected visual mask.
+  const mask=[]; for(let y=2;y<n-2;y++)for(let x=2;x<n-2;x++)if(layoutThemeMask(theme,x,y,n))mask.push([x,y]);
+  const wallDensity=Math.max(.18,Math.min(.55,Number(idea.density)||.24)); const step=Math.max(1,Math.round(1/wallDensity));
+  for(let i=0;i<mask.length;i+=step){const [x,y]=mask[i];if(Math.abs(x-cx)<5&&Math.abs(y-cy)<5)continue;addObj('wall',x,y,1,1,'wall',{label:'Wall',icon:'🧱'});if(placements.filter(p=>p.category==='wall').length>180)break;}
+  // Realistic home-village support/resource objects, distributed around the creative shape.
+  const supports=[['gold_storage',4,3,3,'🪙'],['elixir_storage',4,3,3,'💧'],['dark_storage',1,3,3,'🖤'],['army_camp',4,4,4,'⛺'],['barracks',4,3,3,'⚒️'],['laboratory',1,4,4,'🧪']];
+  let si=0; for(const [id,count,w,h,icon] of supports){for(let i=0;i<count;i++){const angle=(Math.PI*2*(si+i)/(count+1))+0.35;const r=17;const x=Math.round(cx+Math.cos(angle)*r-w/2),y=Math.round(cy+Math.sin(angle)*r-h/2);addObj(id,Math.max(2,x),Math.max(2,y),w,h,'support',{label:objectLabel(id),icon});}si+=count;}
+  // Traps are explicit markers, not exact in-game trap coordinates.
+  let traps=0; for(const [x,y] of perimeterCandidates(theme,n)){if(traps>=Math.min(18,6+Math.floor(th/2)))break;if(addObj('trap',x,y,1,1,'trap',{label:'Trap',icon:'⚠️'}))traps++;}
+  const issues=[]; const occupiedByObject=new Map(); for(const p of placements){for(const cell of rectCells(p)){if(occupiedByObject.has(cell))issues.push(`Collision at ${cell}`);else occupiedByObject.set(cell,p.id);}}
+  if(!placements.some(p=>p.id==='town_hall'))issues.push('Town Hall missing');
+  const metrics={placedObjects:placements.length,walls:placements.filter(p=>p.category==='wall').length,defenses:placements.filter(p=>p.category==='defense').length,support:placements.filter(p=>p.category==='support'||p.category==='resource').length,traps:placements.filter(p=>p.category==='trap').length,footprints:placements.filter(p=>p.w>1||p.h>1).length,symmetry};
+  return {townHall:th,purpose,theme,prompt,idea,gridSize:n,coordinateSystem:'44x44 semantic layout grid',placements,metrics,inventory:inv.map(([id,count,w,h,icon])=>({id,count,w,h,icon})),validation:{ok:issues.length===0,level:'object-footprint-and-collision',issues:[...new Set(issues)].slice(0,50)},export:{format:'jagathish-coc-layout-blueprint-v2',playableOpenLayout:false,reason:'This compiler produces a game-object blueprint; Supercell-signed OpenLayout payloads are still selected from genuine community links rather than forged.'},note:'AI concept compiled into a Town Hall-aware object blueprint with real building names and footprints. The OpenLayout result, when shown, is a genuine community layout selected as a playable companion.'};
+}
+function coreStyleSpots(style,theme,n){
+  if(style==='ring')return spiralPoints(22,22,11,12);
+  if(theme==='Maze')return [[10,10],[22,8],[34,10],[8,22],[36,22],[10,34],[22,36],[34,34],[15,15],[29,15],[15,29],[29,29]];
+  return [[11,22],[22,11],[33,22],[22,33],[13,13],[31,13],[31,31],[13,31],[17,8],[36,17],[27,36],[8,27]];
 }
 function buildCreativeBlueprint(th,purpose,prompt,idea={}){return compileCreativeLayout(th,purpose,prompt,idea);}
 
@@ -776,7 +825,7 @@ app.post('/api/coc/compile-creative-layout', async (req,res)=>{
   const purpose=String(req.body?.basePurpose||'AI Surprise').trim();
   const prompt=String(req.body?.prompt||'').trim()||'Surprise me with a creative base shape.';
   const idea=req.body?.idea&&typeof req.body.idea==='object'?req.body.idea:{};
-  try{const compiled=compileCreativeLayout(th,purpose,prompt,idea);res.json({success:true,townHall:th,generationMode:'server-layout-compiler',strategySource:'AI-blueprint-or-fallback',compilerVersion:'V14.0',layout:compiled});}
+  try{const compiled=compileCreativeLayout(th,purpose,prompt,idea);res.json({success:true,townHall:th,generationMode:'server-layout-compiler',strategySource:'AI-blueprint-or-fallback',compilerVersion:'V16.0',layout:compiled});}
   catch(e){res.status(500).json({error:e?.message||'Creative layout compilation failed.'});}
 });
 
@@ -884,7 +933,7 @@ app.post('/api/coc/generate-base', async (req, res) => {
           : `AI selected ${baseType}. The server selected and validated a matching TH${th} community layout link.`
     });
   } catch (e) {
-    console.error('CoC V14 base generation error:', e);
+    console.error('CoC V16 base generation error:', e);
     res.status(e?.name === 'AbortError' ? 504 : 500).json({ error: e?.name === 'AbortError' ? 'Base catalog or AI provider timed out.' : (e.message || 'Unable to generate base.') });
   }
 });

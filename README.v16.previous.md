@@ -51,6 +51,3 @@ Output includes:
 ## Build
 
 `V14 · 2026-09-20`
-
-## V16
-The creative compiler now uses Town Hall-aware named object inventories and explicit footprints for the visual/semantic blueprint stage. It still does not forge Supercell-signed OpenLayout payloads.
